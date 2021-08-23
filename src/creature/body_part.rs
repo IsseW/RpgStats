@@ -1,6 +1,8 @@
+use crate::stats::StatGain;
 
 
-enum BodyPart {
+
+enum BodyPartType {
     Arm,
     Hand,
     Leg,
@@ -13,4 +15,9 @@ enum BodyPart {
     Nose,
     Ear,
     Tail,
+}
+
+struct BodyPart {
+    gains: StatGain,
+    
 }

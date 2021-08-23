@@ -1,23 +1,18 @@
+use crate::stats::StatAccessor;
 use crate::count_idents;
-use crate::stats::{Stats, BaseStat};
+use crate::stats::{BaseStat, Stats, Resource};
 use paste::paste;
 
-
-macro_rules! function_content {
-    ($stats:ident, $name:ident, $base:ident, $($base_stat:ident), *) => {
-        $(if BaseStat::$base_stat == BaseStat::$base { $stats.update_stat(Stat::$name) }) *
-    }
-}
-
-macro_rules! functions {
-    ($name:ident, $($base:ident [$($base_stat:ident), *]), *) => {
-        paste! {
-            $(
-            fn [< $name:lower _on_base_ $base:lower _changed >](stats: &mut Stats) {
-                function_content!(stats, $name, $base, $($base_stat), *);
-            }
-        ) *
-    }
+macro_rules! base_stat_check {
+    ($m: ident, $($name:ident) *, $code:expr) => {
+        match $m {
+            $(ty @ BaseStat::$name => {
+                $code(ty);
+            }), *
+        }
+    };
+    ($m: ident, $stats:ident, $($stat:ident, $($base_stat:ident) *); *, $($name:ident) *) => {
+        base_stat_check!($m, $($name) *, |ty| { $($(if BaseStat::$base_stat == ty { $stats.update_stat(Stat::$stat) }) *) * })
     }
 }
 
@@ -30,7 +25,7 @@ macro_rules! stat_check {
         }
     };
     ($m:ident, $stats:ident, $($name1:ident) *, $($name2:ident [$($name3: ident), *]) *) => {
-        stat_check!($m, $($name1) *, $(|ty| { $(if ty == Stat::$name3 { Stat::$name2.update($stats) } ), *}); *)
+        stat_check!($m, $($name1) *, $(|ty| { $(if ty == Stat::$name3 { $stats.update_stat(Stat::$name2) } ), *}); *)
     }
 }
 
@@ -44,81 +39,24 @@ macro_rules! stats {
             $($name), *
         }
 
+        impl StatAccessor for Stat {
+            
+                fn get_value(&self, stats: &Stats) -> f32 { stats[*self] }
+                fn get_base_value(&self, stats: &Stats) -> f32 { *stats.stats_uncalculated.get(self).unwrap_or(&0.0) }
+        }
         const NUM_STATS: usize = count_idents!($($name), *);
 
         paste! {
             const NAMES: [&'static str; NUM_STATS] = [$(stringify!([<$name:lower>])), *];
+        }
 
-            $(
-                functions!($name, Hearing [$($base_stat), *], Smell [$($base_stat), *], Vision [$($base_stat), *],
-                 Strength [$($base_stat), *], Dexterity [$($base_stat), *], Intelligence [$($base_stat), *], Vitality [$($base_stat), *], Defence [$($base_stat), *], 
-                 Sense [$($base_stat), *], Wisdom [$($base_stat), *], Luck [$($base_stat), *], Karma [$($base_stat), *], Weight [$($base_stat), *], 
-                 Fire [$($base_stat), *], Ice [$($base_stat), *], Wind [$($base_stat), *], Electric [$($base_stat), *], Earth [$($base_stat), *]);
-            ) *
+        pub fn base_stat_changed(stats: &mut Stats, changed: BaseStat) {
+            base_stat_check!(changed, stats, $($name, $($base_stat) *); *,
+            Hearing Smell Vision Strength Dexterity Intelligence Vitality Defence Sense Charisma Wisdom Luck Karma Weight Size Fire Ice Wind Electric Earth);
+        }
 
-            pub fn base_stat_changed(stats: &mut Stats, changed: BaseStat) {
-                match changed {
-                    BaseStat::Hearing => {
-                        $([< $name:lower _on_base_ hearing _changed >](stats)); *
-                    }
-                    BaseStat::Smell => {
-                        $([< $name:lower _on_base_ smell _changed >](stats)); *
-                    }
-                    BaseStat::Vision => {
-                        $([< $name:lower _on_base_ vision _changed >](stats)); *
-                    }
-                    BaseStat::Strength => {
-                        $([< $name:lower _on_base_ strength _changed >](stats)); *
-                    }
-                    BaseStat::Dexterity => {
-                        $([< $name:lower _on_base_ dexterity _changed >](stats)); *
-                    }
-                    BaseStat::Intelligence => {
-                        $([< $name:lower _on_base_ intelligence _changed >](stats)); *
-                    }
-                    BaseStat::Vitality => {
-                        $([< $name:lower _on_base_ vitality _changed >](stats)); *
-                    }
-                    BaseStat::Defence => {
-                        $([< $name:lower _on_base_ defence _changed >](stats)); *
-                    }
-                    BaseStat::Sense => {
-                        $([< $name:lower _on_base_ sense _changed >](stats)); *
-                    }
-                    BaseStat::Wisdom => {
-                        $([< $name:lower _on_base_ wisdom _changed >](stats)); *
-                    }
-                    BaseStat::Luck => {
-                        $([< $name:lower _on_base_ luck _changed >](stats)); *
-                    }
-                    BaseStat::Karma => {
-                        $([< $name:lower _on_base_ karma _changed >](stats)); *
-                    }
-                    BaseStat::Weight => {
-                        $([< $name:lower _on_base_ weight _changed >](stats)); *
-                    }
-                    BaseStat::Fire => {
-                        $([< $name:lower _on_base_ fire _changed >](stats)); *
-                    }
-                    BaseStat::Ice => {
-                        $([< $name:lower _on_base_ ice _changed >](stats)); *
-                    }
-                    BaseStat::Wind => {
-                        $([< $name:lower _on_base_ wind _changed >](stats)); *
-                    }
-                    BaseStat::Electric => {
-                        $([< $name:lower _on_base_ electric _changed >](stats)); *
-                    }
-                    BaseStat::Earth => {
-                        $([< $name:lower _on_base_ earth _changed >](stats)); *
-                    }
-                }
-            }
-        
-        
-            fn stat_changed(stats: &mut Stats, changed: Stat) {
-                stat_check!(changed, stats, $($name) *, $($name [$($stat) *]) *)
-            }
+        fn stat_changed(stats: &mut Stats, changed: Stat) {
+            stat_check!(changed, stats, $($name) *, $($name [$($stat) *]) *)
         }
 
         impl Stat {
@@ -137,11 +75,11 @@ macro_rules! stats {
     }
 }
 
-fn distribution(x: f32, half: f32) -> f32 {
+pub fn distribution(x: f32, half: f32) -> f32 {
     1.0 - x / (x.abs() + half)
 }
 
-// Usage: 
+// Usage:
 // NAME_OF_STAT: <Used base stats> : <Used stats>: |stats: &mut Stats| {
 //      Code goes here...
 // }
@@ -157,8 +95,11 @@ stats! {
         Vision: Vision, Sense: : |stats: &mut Stats| {
             stats[BaseStat::Vision] * stats[BaseStat::Sense]
         },
+
+        ReactionTime: Sense: Vision: |stats: &mut Stats| {
+            1.0 / (stats[BaseStat::Sense] * stats[Stat::Vision])
+        },
     ]
-    
     // Movement
     [
         Speed: Dexterity, Strength, Weight: : |stats: &mut Stats| {
@@ -167,8 +108,11 @@ stats! {
         JumpHeight: Dexterity, Strength, Weight: : |stats: &mut Stats| {
             (stats[BaseStat::Dexterity] * 5.0 + stats[BaseStat::Strength] * 5.0) / stats[BaseStat::Weight].min(1.0)
         },
+
+        DodgeTime: : Speed: |stats: &mut Stats| {
+            1.0 / stats[Stat::Speed]
+        },
     ]
-    
     // Damage
     [
         PhysicalCritChance: Dexterity, Luck: : |stats: &mut Stats| {
@@ -181,6 +125,40 @@ stats! {
             0.0
         },
 
+
+        PhysicalDamage: Strength: : |stats: &mut Stats| {
+            1.0 + stats[BaseStat::Strength] * 0.01
+        },
+        CuttingDamage: Strength, Dexterity: : |stats: &mut Stats| {
+            1.0 + stats[BaseStat::Strength] * 0.004 + stats[BaseStat::Dexterity] * 0.006
+        },
+        MagicalDamage: Intelligence: : |stats: &mut Stats| {
+            1.0 + stats[BaseStat::Intelligence] * 0.012
+        },
+        MentalDamage: Charisma, Wisdom: : |stats: &mut Stats| {
+            1.0 + stats[BaseStat::Charisma] * 0.007 + stats[BaseStat::Wisdom] * 0.005
+        },
+        CurseDamage: Intelligence, Karma: : |stats: &mut Stats| {
+            1.0 + stats[BaseStat::Intelligence] * 0.0001 * 0.0f32.max(-stats[BaseStat::Karma])
+        },
+        HolyDamage: Intelligence, Karma: : |stats: &mut Stats| {
+            1.0 + stats[BaseStat::Intelligence] * 0.0001 * 0.0f32.max(stats[BaseStat::Karma])
+        },
+        FireDamage: Fire: : |stats: &mut Stats| {
+            1.0 + stats[BaseStat::Fire] * 0.01
+        },
+        IceDamage: Ice: : |stats: &mut Stats| {
+            1.0 + stats[BaseStat::Ice] * 0.01
+        },
+        WindDamage: Wind: : |stats: &mut Stats| {
+            1.0 + stats[BaseStat::Wind] * 0.01
+        },
+        ElectricDamage: Electric: : |stats: &mut Stats| {
+            1.0 + stats[BaseStat::Electric] * 0.01
+        },
+        EarthDamage: Earth: : |stats: &mut Stats| {
+            1.0 + stats[BaseStat::Earth] * 0.01
+        },
     ]
 
     // Defence
@@ -219,7 +197,6 @@ stats! {
             stats[BaseStat::Earth] * 5.0
         },
 
-        
         PhysicalReduction: : PhysicalArmor: |stats: &mut Stats| {
             distribution(stats[Stat::PhysicalArmor], 500.0)
         },
@@ -287,17 +264,24 @@ stats! {
             stats[Stat::EarthArmor] * 0.1
         },
     ]
-    
     // Resources
     [
         MaxHealth: Vitality, Strength: : |stats: &mut Stats| {
-            0.0f32.max(stats[BaseStat::Vitality] * 7.0 + stats[BaseStat::Strength] * 3.0)
+            let t = 0.0f32.max(stats[BaseStat::Vitality] * 7.0 + stats[BaseStat::Strength] * 3.0);
+            if t > 0.0 { 
+                stats.add_resource(Resource::HP, true);
+            }
+            t
         },
         HealthRegen: Vitality, Strength: : |stats: &mut Stats| {
             stats[BaseStat::Vitality] * 7.0 + stats[BaseStat::Strength] * 3.0
         },
         MaxMana: Wisdom, Intelligence: : |stats: &mut Stats| {
-            0.0f32.max(stats[BaseStat::Wisdom] * 7.0 + (stats[BaseStat::Intelligence] - 20.0) * 3.0)
+            let t = 0.0f32.max(stats[BaseStat::Wisdom] * 7.0 + (stats[BaseStat::Intelligence] - 20.0) * 3.0);
+            if t > 0.0 { 
+                stats.add_resource(Resource::Mana, true);
+            }
+            t
         },
         ManaRegen: Wisdom, Intelligence: : |stats: &mut Stats| {
             stats[BaseStat::Intelligence] * 7.0 + stats[BaseStat::Wisdom] * 3.0

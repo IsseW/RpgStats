@@ -38,4 +38,21 @@ resources! {
     regen => |stats: &Stats| {
         stats[Stat::HealthRegen]
     }
+    Mana,
+    max => |stats: &Stats| {
+        stats[Stat::MaxMana]
+    },
+    regen => |stats: &Stats| {
+        stats[Stat::ManaRegen]
+    }
+}
+
+pub enum ConsumptionType {
+    Percent(f32),
+    Flat(f32),
+}
+
+pub struct ResourceConsumption {
+    pub resource: Resource,
+    pub ty: ConsumptionType,
 }

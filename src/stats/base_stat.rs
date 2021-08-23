@@ -1,4 +1,7 @@
+use crate::stats::Stats;
+use crate::stats::StatAccessor;
 use std::ops::Index;
+use std::ops::IndexMut;
 
 use crate::count_idents;
 
@@ -9,7 +12,14 @@ macro_rules! base_stats {
         pub enum BaseStat {
             $($name), *
         }
+
+        impl StatAccessor for BaseStat {
+                fn get_value(&self, stats: &Stats) -> f32 { stats[*self] }
+                fn get_base_value(&self, stats: &Stats) -> f32 { stats.base_stats_uncalculated[*self] }
+        }
+
         const NUM_BASE_STATS: usize = count_idents!($($name), *);
+        pub const BASE_STAT_ITER: [BaseStat; NUM_BASE_STATS] = [$(BaseStat::$name), *];
         const NAMES: [&'static str; NUM_BASE_STATS] = [$(stringify!($name)), *];
         const SHORTS: [&'static str; NUM_BASE_STATS] = [$($short), *];
         const CAN_LEVEL: [bool; NUM_BASE_STATS] = [$($can_level), *];
@@ -38,11 +48,13 @@ base_stats! {
     Vitality "vit" true,
     Defence "def" true,
     Sense "sen" true,
+    Charisma "cha" true,
 
     Wisdom "wis" false,
     Luck "luc" false,
     Karma "kar" false,
     Weight "wei" false,
+    Size "size" false,
     
     Fire "fire" false,
     Ice "ice" false,
@@ -51,8 +63,28 @@ base_stats! {
     Earth "earth" false,
 }
 
+
 pub struct BaseStats {
     data: [f32; NUM_BASE_STATS],
+}
+
+impl BaseStats {
+    pub fn zeroes() -> Self {
+        Self { 
+            data: [0.0; NUM_BASE_STATS]
+        }
+    }
+    pub fn ones() -> Self {
+        Self { 
+            data: [1.0; NUM_BASE_STATS]
+        }
+    }
+}
+
+impl Default for BaseStats {
+    fn default() -> Self {
+        Self::zeroes()
+    }
 }
 
 impl Index<BaseStat> for BaseStats {
@@ -60,5 +92,10 @@ impl Index<BaseStat> for BaseStats {
 
     fn index(&self, index: BaseStat) -> &Self::Output {
         &self.data[index as usize]
+    }
+}
+impl IndexMut<BaseStat> for BaseStats {
+    fn index_mut(&mut self, index: BaseStat) -> &mut Self::Output {
+        &mut self.data[index as usize]
     }
 }

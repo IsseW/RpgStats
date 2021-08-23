@@ -1,8 +1,9 @@
+use crate::stats::stats::distribution;
 use crate::stats::{Stat, BaseStat, Stats};
-
+use crate::dmg;
 struct EffectData {
     strength: f32,
-    time: f32,
+    data: f32,
 }
 
 macro_rules! effects {
@@ -15,25 +16,25 @@ macro_rules! effects {
         impl Effect {
             fn name(&self) -> &'static str {
                 match self {
-                    $($name => stringify!($name)), *
+                    $(Self::$name => stringify!($name)), *
                 }
             }
 
             fn start(&self, stats: &mut Stats, data: &mut EffectData) {
                 match self {
-                    $($($name => $start(stats, data),)?) *
+                    $($(Self::$name => { $start(stats, data);},)?) *
                     _ => {}
                 }
             }
-            fn update(&self, stats: &mut Stats, data: &mut EffectData) {
+            fn update(&self, stats: &mut Stats, data: &mut EffectData, delta: f32) {
                 match self {
-                    $($($name => $update(stats, data),)?) *
+                    $($(Self::$name => { $update(stats, data, delta);},)?) *
                     _ => {}
                 }
             }
             fn end(&self, stats: &mut Stats, data: &mut EffectData) {
                 match self {
-                    $($($name => $end(stats, data),)?) *
+                    $($(Self::$name => { $end(stats, data);},)?) *
                     _ => {}
                 }
             }
@@ -45,9 +46,18 @@ macro_rules! effects {
 
 effects! { 
     Fire,
-    update => |stats, data| {
-        
+    update => |stats: &mut Stats, data: &mut EffectData, delta: f32| {
+        stats.apply_damage(&dmg!(Fire: data.strength * delta));
     }
-    Poison
-
+    Poison,
+    update => |stats: &mut Stats, data: &mut EffectData, delta: f32| {
+        stats.apply_damage(&dmg!(Curse: data.strength * delta));
+    }
+    Slow,
+    start => |stats: &mut Stats, data: &mut EffectData| {
+        stats.mul_stat(Stat::Speed, distribution(data.strength, 4.0));
+    },
+    end => |stats: &mut Stats, data: &mut EffectData| {
+        stats.mul_stat(Stat::Speed, 1.0 / distribution(data.strength, 4.0));
+    }
 }
