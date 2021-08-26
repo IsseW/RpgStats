@@ -1,11 +1,9 @@
-
-
 use rand::Rng;
 use rand::thread_rng;
+use std::collections::HashMap;
 
 use crate::stats::Stats;
 use crate::stats::Stat;
-use std::collections::HashMap;
 
 
 macro_rules! damages {

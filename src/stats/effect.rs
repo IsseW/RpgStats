@@ -1,6 +1,7 @@
-use crate::stats::stats::distribution;
-use crate::stats::{Stat, BaseStat, Stats};
+use crate::stats::stat::distribution;
+use crate::stats::{Stat, Stats};
 use crate::dmg;
+
 struct EffectData {
     strength: f32,
     data: f32,

@@ -19,5 +19,15 @@ enum BodyPartType {
 
 struct BodyPart {
     gains: StatGain,
+
+    slot_used: bool,
+
+    parent: usize,
+    children: Vec<usize>,
+
+    ty: BodyPartType,
+}
+
+struct Body {
     
 }

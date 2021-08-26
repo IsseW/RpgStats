@@ -1,5 +1,3 @@
-use crate::stats::Stats;
-use crate::stats::StatAccessor;
 use std::ops::Index;
 use std::ops::IndexMut;
 
@@ -13,10 +11,6 @@ macro_rules! base_stats {
             $($name), *
         }
 
-        impl StatAccessor for BaseStat {
-                fn get_value(&self, stats: &Stats) -> f32 { stats[*self] }
-                fn get_base_value(&self, stats: &Stats) -> f32 { stats.base_stats_uncalculated[*self] }
-        }
 
         const NUM_BASE_STATS: usize = count_idents!($($name), *);
         pub const BASE_STAT_ITER: [BaseStat; NUM_BASE_STATS] = [$(BaseStat::$name), *];
