@@ -1,12 +1,7 @@
 #![allow(dead_code)]
-use bevy::sprite::TextureAtlasBuilder;
-use crate::item::ToolProficiencies;
-use bevy::app::EventWriter;
+use crate::{Printer, item::ToolProficiencies};
 use bevy::ecs::system::{Commands, Res};
-use bevy::prelude::AssetServer;
 use bevy::utils::HashMap;
-use bevy::utils::HashSet;
-use bevy_console::PrintConsoleLine;
 use paste::paste;
 use serde::{Deserialize, Serialize};
 use std::ops::{Index, IndexMut};
@@ -153,6 +148,7 @@ where
 
 macro_rules! ref_struct {
     ($ty:ident [$($field:ident: $field_ty:ty), *][$($ref_field:ident: $ref_field_ty:ty), *]) => {
+        #[derive(Debug, Clone, Serialize, Deserialize)]
         struct $ty {
             $($field: $field_ty,) *
             $($ref_field: $ref_field_ty,) *
@@ -192,6 +188,7 @@ macro_rules! ref_struct {
 
 macro_rules! ref_enum {
     ($ty:ident [$($field:ident $(: $field_ty:ty)?), *][$($ref_field:ident: $ref_field_ty:ty), *]) => {
+        #[derive(Debug, Clone, Serialize, Deserialize)]
         enum $ty {
             $($field $(($field_ty))?,) *
             $($ref_field($ref_field_ty),) *
@@ -230,7 +227,7 @@ macro_rules! ref_enum {
                 }
                 fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Self {
                     match reference {
-                        $(Self::Intermediate::$field $(([< __ $field_ty:lower >]))? => Self::$field $(([< __ $field_ty:lower >].clone()))?,) *
+                        $(Self::Intermediate::$field $(([< __ $field_ty:snake >]))? => Self::$field $(([< __ $field_ty:snake >].clone()))?,) *
                         $(Self::Intermediate::$ref_field(data) => Self::$ref_field(<$ref_field_ty as ReferenceHolder>::convert(builder, &data)),) *
                     }
                 }
@@ -362,6 +359,8 @@ macro_rules! definitions {
 
             $(
                 type [< $ty sMapType >] = HashMap<String, ([< $ty DefinitionUnloaded >], usize, String)>;
+
+                #[derive(Deserialize, Serialize, Debug, Clone)]
                 pub struct [< $ty Definition >] {
                     name: String,
                     namespace: String,
@@ -397,16 +396,16 @@ macro_rules! definitions {
                     }
                 }
 
-                #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+                #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
                 pub struct $ty(usize);
 
                 impl ReferenceHolder for $ty {
                     type Intermediate = String;
                     fn intermediate(builder: &mut DefinitionBuilder, namespace: &String, value: &serde_json::Value) -> Self::Intermediate {
-                        builder.[< load_ $ty:lower _cross_ref >](namespace, value)
+                        builder.[< load_ $ty:snake _cross_ref >](namespace, value)
                     }
                     fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Self {
-                        builder.[< $ty:lower s >].get(reference).unwrap().1.into()
+                        builder.[< $ty:snake s >].get(reference).unwrap().1.into()
                     }
                 }
 
@@ -433,18 +432,26 @@ macro_rules! definitions {
             #[derive(Default)]
             struct DefinitionBuilder {
                 loaded_namespaces: HashMap<String, Version>,
-                ids: HashMap<String, usize>,
                 $(
-                    [< $ty:lower s >]: [< $ty sMapType >],
-                    [< $ty:lower _count >]: usize,
+                    [< $ty:snake s >]: [< $ty sMapType >],
+                    [< $ty:snake _count >]: usize,
                 ) *
+            }
+
+            struct Mod {
+                namespace: String,
+                $([< $ty:snake s>]: HashMap<String, usize>), *
+            }
+
+            struct Mods {
+                mods: HashMap<String, Mod>,
             }
 
             impl DefinitionBuilder {
 
-                fn load_namespaces(
-                    &mut self, mut values: Vec<(PathBuf, serde_json::Value)>,
-                    mut console_line: EventWriter<PrintConsoleLine>
+                fn load_namespaces<T : Printer>(
+                    &mut self, values: Vec<(PathBuf, serde_json::Value)>,
+                    printer: &T
                 ) -> &mut Self {
                     // Preload the namespaces.
                     let mut mods = vec![];
@@ -452,7 +459,7 @@ macro_rules! definitions {
                         if let Some(obj) = value.1.as_object() {
                             if let Some(namespace) = obj["namespace"].as_str() {
                                 if self.loaded_namespaces.contains_key(namespace) {
-                                    console_line.send(PrintConsoleLine::new(format!("Error: Namespace {} has already been loaded.", namespace)));
+                                    printer.error(format!("Namespace {} has already been loaded.", namespace));
                                 }
                                 else if let Some(version_str) = obj["version"].as_str() {
                                     if let Some(version) = Version::from_str(version_str) {
@@ -469,7 +476,7 @@ macro_rules! definitions {
                                                         });
                                                     }
                                                     else {
-                                                        console_line.send(PrintConsoleLine::new(format!("Error: Mod in file {} with namespace {} version constraint for dependency {} is incorrectly formatted.", value.0.display(), namespace, name)));
+                                                        printer.error(format!("Mod in file {} with namespace {} version constraint for dependency {} is incorrectly formatted.", value.0.display(), namespace, name));
                                                         continue;
                                                     }
                                                 }
@@ -484,7 +491,7 @@ macro_rules! definitions {
                                                             });
                                                         }
                                                         else {
-                                                            console_line.send(PrintConsoleLine::new(format!("Error: Mod in file {} with namespace {} version constraint for dependency {} is incorrectly formatted.", value.0.display(), namespace, name)));
+                                                            printer.error(format!("Mod in file {} with namespace {} version constraint for dependency {} is incorrectly formatted.", value.0.display(), namespace, name));
                                                             continue;
                                                         }
                                                     }
@@ -495,7 +502,7 @@ macro_rules! definitions {
                                         let defs = if let Some(defs) = obj["defs"].as_object() {
                                             defs
                                         } else {
-                                            console_line.send(PrintConsoleLine::new(format!("Error: Mod in file {} with namespace {} defs value is incorrectly formatted.", value.0.display(), namespace)));
+                                            printer.error(format!("Mod in file {} with namespace {} defs value is incorrectly formatted.", value.0.display(), namespace));
                                             continue;
                                         };
 
@@ -503,17 +510,17 @@ macro_rules! definitions {
                                         self.loaded_namespaces.insert(namespace.to_string(), version);
 
                                     } else {
-                                        console_line.send(PrintConsoleLine::new(format!("Error: Mod in file {} with namespace {} version value is incorrectly formatted.", value.0.display(), namespace)));
+                                        printer.error(format!("Mod in file {} with namespace {} version value is incorrectly formatted.", value.0.display(), namespace));
                                     }
                                 } else {
-                                    console_line.send(PrintConsoleLine::new(format!("Error: Mod in file {} with namespace {} is missing namespace key.", value.0.display(), namespace)));
+                                    printer.error(format!("Mod in file {} with namespace {} is missing namespace key.", value.0.display(), namespace));
                                 }
                             }
                             else {
-                                console_line.send(PrintConsoleLine::new(format!("Error: Mod in file {} is missing namespace key.", value.0.display())));
+                                printer.error(format!("Mod in file {} is missing namespace key.", value.0.display()));
                             }
                         } else {
-                            console_line.send(PrintConsoleLine::new(format!("Error: Mod in file {} is incorrectly formatted.", value.0.display())));
+                            printer.error(format!("Mod in file {} is incorrectly formatted.", value.0.display()));
                         }
                     }
 
@@ -529,7 +536,7 @@ macro_rules! definitions {
                                     }
                                 };
                                 if delete {
-                                    console_line.send(PrintConsoleLine::new(format!("Error: Stopped loading {}, because it does not have the required dependency {}.", mods[i].0, dep.namespace)));
+                                    printer.error(format!("Stopped loading {}, because it does not have the required dependency {}.", mods[i].0, dep.namespace));
                                     self.loaded_namespaces.remove(&dep.namespace);
                                     mods.swap_remove(i);
                                     continue 'check;
@@ -545,16 +552,16 @@ macro_rules! definitions {
                             for (k, v) in defs {
                                 if let Some(arr) = v.as_array() {
                                     match k.as_str() {
-                                        $(stringify!([< $ty:lower s >]) => self.[< read_ $ty:lower _defs >](&module.0, arr),) *
+                                        $(stringify!([< $ty:snake s >]) => self.[< read_ $ty:snake _defs >](&module.0, arr),) *
 
-                                        $(stringify!([< $ty:lower s_override >]) => self.[< read_ $ty:lower _overrides >](&module.0, arr),) *
+                                        $(stringify!([< $ty:snake s_override >]) => self.[< read_ $ty:snake _overrides >](&module.0, arr),) *
 
                                         other => {
-                                            console_line.send(PrintConsoleLine::new(format!("Warning: Unknown definition {} in mod {}.", other, module.0)));
+                                            printer.error(format!("Warning: Unknown definition {} in mod {}.", other, module.0));
                                         },
                                     }
                                 } else {
-                                    console_line.send(PrintConsoleLine::new(format!("Error: Expected array for definitions of type {} in mod {}.", k, module.0)));
+                                    printer.error(format!("Expected array for definitions of type {} in mod {}.", k, module.0));
                                 }
                             }
                         }
@@ -563,10 +570,11 @@ macro_rules! definitions {
                     self
                 }
 
-                fn build(&self, commands: &mut Commands, asset_server: &Res<AssetServer>) {
+                fn build(&self, commands: &mut Commands) {
                     $(
-                        let mut [< $ty s_defs >] = [< $ty s >] {
-                            items: self.[< $ty:lower s >].iter().map(|(k, (def, id, namespace))| {
+                        #[allow(unused_mut)]
+                        let mut [< $ty:snake s_defs >] = [< $ty s >] {
+                            items: self.[< $ty:snake s >].iter().map(|(k, (def, id, namespace))| {
                                 [< $ty Definition >] {
                                     name: def.name.clone(),
                                     namespace: namespace.clone(),
@@ -578,35 +586,29 @@ macro_rules! definitions {
                                 }
                             }).collect()
                         };
-                        fn [<on_done_ $ty:lower>](commands: &mut Commands, asset_server: &Res<AssetServer>, items: &mut [< $ty s >]) {
-                            $(
-                                let t = $on_done;
-                                t(commands, asset_server, items);
-                            )?
-                        }
-                        [<on_done_ $ty:lower>](commands, asset_server, &mut [< $ty s_defs >]);
-                        commands.insert_resource([< $ty s_defs >]);
+                        $($on_done(&mut [< $ty:snake s_defs >]);)?
+                        commands.insert_resource([< $ty:snake s_defs >]);
                     ) *
                 }
 
 
                 $(
-                    fn [< read_ $ty:lower _overrides >](&mut self, namespace: &String, values: &Vec<serde_json::Value>) {
+                    fn [< read_ $ty:snake _overrides >](&mut self, namespace: &String, values: &Vec<serde_json::Value>) {
                         for value in values {
                             if let Some(obj) = value.as_object() {
                                 let id = obj["id"].as_str().unwrap().into();
-                                self.[< load_ $ty:lower _def >](namespace, &id, obj);
+                                self.[< load_ $ty:snake _def >](namespace, &id, obj);
                             }
                         }
                     }
 
-                    fn [< read_ $ty:lower _defs >](&mut self, namespace: &String, values: &Vec<serde_json::Value>) {
+                    fn [< read_ $ty:snake _defs >](&mut self, namespace: &String, values: &Vec<serde_json::Value>) {
                         for value in values {
-                            self.[< read_ $ty:lower _def >](namespace, value);
+                            self.[< read_ $ty:snake _def >](namespace, value);
                         }
                     }
 
-                    fn [< read_ $ty:lower _def >](&mut self, namespace: &String, value: &serde_json::Value) -> Option<String> {
+                    fn [< read_ $ty:snake _def >](&mut self, namespace: &String, value: &serde_json::Value) -> Option<String> {
                         if let Some(obj) = value.as_object() {
                             let mut def: [< $ty DefinitionUnloaded >] = Default::default();
                             def.id = obj["id"].as_str().unwrap().into();
@@ -614,13 +616,13 @@ macro_rules! definitions {
 
                             let string_id = namespace.clone() + def.id.as_str();
                             let id = {
-                                let temp = self.[< $ty:lower _count >];
-                                self.[< $ty:lower _count >] += 1;
+                                let temp = self.[< $ty:snake _count >];
+                                self.[< $ty:snake _count >] += 1;
                                 temp
                             };
 
-                            self.[< $ty:lower s >].insert(string_id.clone(), (def, id, namespace.clone()));
-                            self.[< load_ $ty:lower _def >](namespace, &string_id, &obj);
+                            self.[< $ty:snake s >].insert(string_id.clone(), (def, id, namespace.clone()));
+                            self.[< load_ $ty:snake _def >](namespace, &string_id, &obj);
 
                             Some(string_id)
                         }
@@ -629,25 +631,26 @@ macro_rules! definitions {
                         }
                     }
 
-                    fn [< load_ $ty:lower _def >](&mut self, namespace: &String, def: &String, obj: &serde_json::Map<String, serde_json::Value>) {
+                    #[allow(unused_variables)]
+                    fn [< load_ $ty:snake _def >](&mut self, namespace: &String, def: &String, obj: &serde_json::Map<String, serde_json::Value>) {
 
                         for (key, value) in obj {
                             match key.as_str() {
                                 "name" => {
-                                    let r = self.[< $ty:lower s >].get_mut(def);
+                                    let r = self.[< $ty:snake s >].get_mut(def);
                                     if let Some(r) = r {
                                         r.0.name = value.as_str().unwrap().into();
                                     }
                                 }
                                 $(stringify!($item) => {
-                                    let r = self.[< $ty:lower s >].get_mut(def);
+                                    let r = self.[< $ty:snake s >].get_mut(def);
                                     if let Some(r) = r {
                                         r.0.$item = serde_json::from_value(value.clone()).unwrap();
                                     }
                                 }) *
                                 $($(stringify!($cross_reference) => {
                                     let value = $cross_reference_type::intermediate(self, namespace, value);
-                                    let r = self.[< $ty:lower s >].get_mut(def);
+                                    let r = self.[< $ty:snake s >].get_mut(def);
                                     if let Some(r) = r {
                                         r.0.$cross_reference = value;
                                     }
@@ -658,7 +661,7 @@ macro_rules! definitions {
                         }
                     }
 
-                    fn [< load_ $ty:lower _cross_ref >](&mut self, namespace: &String, value: &serde_json::Value) -> String {
+                    fn [< load_ $ty:snake _cross_ref >](&mut self, namespace: &String, value: &serde_json::Value) -> String {
                         if let Some(string) = value.as_str() {
                             if string.contains(':') {
                                 string.into()
@@ -668,10 +671,27 @@ macro_rules! definitions {
                         }
                         else {
 
-                            self.[< read_ $ty:lower _def >](namespace, value).unwrap()
+                            self.[< read_ $ty:snake _def >](namespace, value).unwrap()
                         }
                     }
                 ) *
+            }
+
+            struct DefinitionBinary {
+                data: Vec<u8>,
+            }
+
+            fn generate_binary(
+                commands: &mut Commands,
+                $([< $ty:snake s>]: Res<[< $ty s>]>), *
+            ) {
+                let mut obj = serde_json::Map::<String, serde_json::Value>::default();
+                $(
+                    obj.insert(stringify!([< $ty:snake s>]).to_string(), serde_json::to_value([< $ty:snake s>].items.clone()).unwrap());
+                ) *
+                let mut data: Vec<u8> = vec![];
+                serde_cbor::to_writer(&mut data, &obj).expect("Failed to write json object to byte vector. Maybe low on ram?");
+                commands.insert_resource(DefinitionBinary { data });
             }
         }
     }
@@ -693,7 +713,7 @@ impl Default for TextureCrop {
         Self::Full
     }
 }
-// Usage: 
+// Usage:
 // $Name[($member_name: $member_type)...] optional<[($cross_reference_name: $cross_reference_type)...]> optional<hidden [($hidden_member_name: $hidden_member_type)...]>
 // optional<$lambda (&mut Commands, &Res<AssetServer>, &$Names)>
 
@@ -715,20 +735,11 @@ definitions! {
     Sfx[pitch: f32, volume: f32][sound: Sound],
 
 
-    Texture[location: String] hidden [] => |commands, server: &Res<AssetServer>, definitions: &mut Textures| { 
-        let builder = TextureAtlasBuilder::default();
-        for def in definitions.into_iter() {
-            builder.add_texture(server.load(def.location.as_str()));
-        }
-    },
+    Texture[location: String] hidden [],
     Sound[location: String],
 }
 
-fn init_definitions(
-    commands: &mut Commands,
-    console_line: EventWriter<PrintConsoleLine>,
-    asset_server: Res<AssetServer>,
-) {
+fn init_definitions<T : Printer>(commands: &mut Commands, printer: &T) {
     let paths = read_dir("./mods/").unwrap();
 
     let mods: Vec<(PathBuf, serde_json::Value)> = paths
@@ -742,6 +753,6 @@ fn init_definitions(
         .collect();
 
     DefinitionBuilder::default()
-        .load_namespaces(mods, console_line)
-        .build(commands, &asset_server);
+        .load_namespaces(mods, printer)
+        .build(commands);
 }

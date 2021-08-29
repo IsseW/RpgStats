@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 
 #[macro_export]
 macro_rules! count_idents {
