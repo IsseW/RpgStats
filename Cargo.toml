@@ -14,4 +14,13 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_cbor = "0.11.2"
 
+futures-lite = "*"
+
 bevy = "0.5"
+bevy_egui = "*"
+bevy_flycam = "*"
+bevy_networking_turbulence = { version = "0.3" }
+simdnoise = "3.1.6"
+
+[features]
+debug = []

@@ -1,0 +1,13 @@
+{
+    "namespace": "vanilla",
+    "version": "0.0.0",
+    "defs": {
+        "materials": [
+            {
+                "id": "iron",
+                "name": "Iron",
+                ""
+            }
+        ]
+    }
+}

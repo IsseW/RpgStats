@@ -1,7 +1,8 @@
 #![allow(dead_code)]
-use crate::{Printer, item::ToolProficiencies};
-use bevy::ecs::system::{Commands, Res};
+use crate::item::ToolProficiencies;
+use bevy::prelude::*;
 use bevy::utils::HashMap;
+use core::fmt::Display;
 use paste::paste;
 use serde::{Deserialize, Serialize};
 use std::ops::{Index, IndexMut};
@@ -23,15 +24,18 @@ fn gen_id(namespace: &str, id: &str) -> String {
     format!("{}:{}", namespace, id)
 }
 
-trait StringKey {
-    fn convert(string: &String) -> Self;
+trait StringKey
+where
+    Self: Sized,
+{
+    fn convert(string: &String) -> Option<Self>;
 }
 
 macro_rules! literal_key {
     ($ty:ty) => {
         impl StringKey for $ty {
-            fn convert(string: &String) -> Self {
-                serde_json::from_str(string.as_str()).unwrap()
+            fn convert(string: &String) -> Option<Self> {
+                serde_json::from_str(string.as_str()).ok()
             }
         }
     };
@@ -40,8 +44,8 @@ macro_rules! literal_key {
 macro_rules! string_key {
     ($ty:ty) => {
         impl StringKey for $ty {
-            fn convert(string: &String) -> Self {
-                serde_json::from_str(format!("\"{}\"", string).as_str()).unwrap()
+            fn convert(string: &String) -> Option<Self> {
+                serde_json::from_str(format!("\"{}\"", string).as_str()).ok()
             }
         }
     };
@@ -61,14 +65,17 @@ literal_key!(i128);
 string_key!(String);
 string_key!(ToolPart);
 
-trait ReferenceHolder {
+trait ReferenceHolder
+where
+    Self: Sized,
+{
     type Intermediate;
     fn intermediate(
         builder: &mut DefinitionBuilder,
         namespace: &String,
         value: &serde_json::Value,
-    ) -> Self::Intermediate;
-    fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Self;
+    ) -> Option<Self::Intermediate>;
+    fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Option<Self>;
 }
 
 impl<T: ReferenceHolder> ReferenceHolder for Vec<T> {
@@ -77,15 +84,14 @@ impl<T: ReferenceHolder> ReferenceHolder for Vec<T> {
         builder: &mut DefinitionBuilder,
         namespace: &String,
         value: &serde_json::Value,
-    ) -> Self::Intermediate {
+    ) -> Option<Self::Intermediate> {
         value
-            .as_array()
-            .unwrap()
+            .as_array()?
             .iter()
             .map(|val| T::intermediate(builder, namespace, val))
             .collect()
     }
-    fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Self {
+    fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Option<Self> {
         reference
             .iter()
             .map(|val| T::convert(builder, val))
@@ -101,18 +107,17 @@ impl<K: std::cmp::Eq + Clone + std::hash::Hash + StringKey, V: ReferenceHolder> 
         builder: &mut DefinitionBuilder,
         namespace: &String,
         value: &serde_json::Value,
-    ) -> Self::Intermediate {
+    ) -> Option<Self::Intermediate> {
         value
-            .as_object()
-            .unwrap()
+            .as_object()?
             .iter()
-            .map(|(key, value)| (K::convert(key), V::intermediate(builder, namespace, value)))
+            .map(|(key, value)| K::convert(key).zip(V::intermediate(builder, namespace, value)))
             .collect()
     }
-    fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Self {
+    fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Option<Self> {
         reference
             .iter()
-            .map(|(key, val)| (key.clone(), V::convert(builder, val)))
+            .map(|(key, val)| Some(key.clone()).zip(V::convert(builder, val)))
             .collect()
     }
 }
@@ -126,24 +131,60 @@ where
         builder: &mut DefinitionBuilder,
         namespace: &String,
         value: &serde_json::Value,
-    ) -> Self::Intermediate {
-        let mut res = [Default::default(); LENGTH];
+    ) -> Option<Self::Intermediate> {
         if let Some(arr) = value.as_array() {
             if arr.len() == LENGTH {
+                let mut res = [Default::default(); LENGTH];
                 for i in 0..LENGTH {
-                    res[i] = T::intermediate(builder, namespace, &arr[i]);
+                    res[i] = T::intermediate(builder, namespace, &arr[i])?;
                 }
+                Some(res)
+            } else {
+                None
             }
+        } else {
+            None
         }
-        res
     }
-    fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Self {
+    fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Option<Self> {
         let mut res = [Default::default(); LENGTH];
         for i in 0..LENGTH {
-            res[i] = T::convert(builder, &reference[i]);
+            res[i] = T::convert(builder, &reference[i])?;
         }
-        res
+        Some(res)
     }
+}
+
+impl<T: ReferenceHolder> ReferenceHolder for Option<T> {
+    type Intermediate = Option<T::Intermediate>;
+
+    fn intermediate(
+        builder: &mut DefinitionBuilder,
+        namespace: &std::string::String,
+        value: &serde_json::Value,
+    ) -> Option<Self::Intermediate> {
+        if let Some(string) = value.as_str() {
+            match string {
+                "None" => Some(None),
+                _ => Some(T::intermediate(builder, namespace, value)),
+            }
+        } else if let Some(_) = value.as_null() {
+            Some(None)
+        } else {
+            Some(T::intermediate(builder, namespace, value))
+        }
+    }
+
+    fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Option<Self> {
+        match reference {
+            Some(reference) => Some(T::convert(builder, reference)),
+            None => Some(None),
+        }
+    }
+}
+
+macro_rules! ref_tuples {
+    ($($num_elements:literal), *) => {};
 }
 
 macro_rules! ref_struct {
@@ -163,22 +204,22 @@ macro_rules! ref_struct {
             impl ReferenceHolder for $ty {
                 type Intermediate = [< $ty Intermediate>];
 
-                fn intermediate(builder: &mut DefinitionBuilder, namespace: &String, value: &serde_json::Value) -> Self::Intermediate {
+                fn intermediate(builder: &mut DefinitionBuilder, namespace: &String, value: &serde_json::Value) -> Option<Self::Intermediate> {
                     if let Some(obj) = value.as_object() {
-                        [< $ty Intermediate>] {
-                            $($field: serde_json::from_value(obj[stringify!($field)].clone()).unwrap(),) *
-                            $($ref_field: <$ref_field_ty as ReferenceHolder>::intermediate(builder, namespace, &obj[stringify!($ref_field)]),) *
-                        }
+                        Some([< $ty Intermediate>] {
+                            $($field: serde_json::from_value(obj[stringify!($field)].clone()).ok()?,) *
+                            $($ref_field: <$ref_field_ty as ReferenceHolder>::intermediate(builder, namespace, &obj[stringify!($ref_field)])?,) *
+                        })
                     }
                     else {
-                        panic!()
+                        None
                     }
                 }
-                fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Self {
-                    Self {
+                fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Option<Self> {
+                    Some(Self {
                         $($field: reference.$field.clone(),) *
-                        $($ref_field: <$ref_field_ty as ReferenceHolder>::convert(builder, &reference.$ref_field),) *
-                    }
+                        $($ref_field: <$ref_field_ty as ReferenceHolder>::convert(builder, &reference.$ref_field)?,) *
+                    })
                 }
             }
         }
@@ -203,32 +244,32 @@ macro_rules! ref_enum {
             impl ReferenceHolder for $ty {
                 type Intermediate = [< $ty Intermediate>];
 
-                fn intermediate(builder: &mut DefinitionBuilder, namespace: &String, value: &serde_json::Value) -> Self::Intermediate {
+                fn intermediate(builder: &mut DefinitionBuilder, namespace: &String, value: &serde_json::Value) -> Option<Self::Intermediate> {
                     if let Some(obj) = value.as_object() {
                         for (key, val) in obj {
                             let t = match key.as_str() {
-                                $(stringify!($field) => Self::Intermediate::$field $((serde_json::from_value::<$field_ty>(val.clone()).unwrap()))?,) *
-                                $(stringify!($ref_field) => Self::Intermediate::$ref_field(<$ref_field_ty as ReferenceHolder>::intermediate(builder, namespace, val)),) *
+                                $(stringify!($field) => Self::Intermediate::$field $((serde_json::from_value::<$field_ty>(val.clone()).ok()?))?,) *
+                                $(stringify!($ref_field) => Self::Intermediate::$ref_field(<$ref_field_ty as ReferenceHolder>::intermediate(builder, namespace, val)?),) *
                                 _ => { continue; }
                             };
-                            return t;
+                            return Some(t);
                         }
-                        panic!()
+                        None
                     }
                     else if let Some(string) = value.as_str() {
                         match string {
-                            $(stringify!($field) => Self::Intermediate::$field $((<$field_ty as Default>::default()))?,) *
-                            _ => panic!()
+                            $(stringify!($field) => Some(Self::Intermediate::$field $((<$field_ty as Default>::default()))?),) *
+                            _ => None
                         }
                     }
                     else {
-                        panic!()
+                        None
                     }
                 }
-                fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Self {
+                fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Option<Self> {
                     match reference {
-                        $(Self::Intermediate::$field $(([< __ $field_ty:snake >]))? => Self::$field $(([< __ $field_ty:snake >].clone()))?,) *
-                        $(Self::Intermediate::$ref_field(data) => Self::$ref_field(<$ref_field_ty as ReferenceHolder>::convert(builder, &data)),) *
+                        $(Self::Intermediate::$field $(([< __ $field_ty:snake >]))? => Some(Self::$field $(([< __ $field_ty:snake >].clone()))?),) *
+                        $(Self::Intermediate::$ref_field(data) => Some(Self::$ref_field(<$ref_field_ty as ReferenceHolder>::convert(builder, &data)?)),) *
                     }
                 }
             }
@@ -353,7 +394,7 @@ enum ParseError {
 type Result<T> = std::result::Result<T, ParseError>;
 
 macro_rules! definitions {
-    ($($ty:ty [$($item:ident: $item_type:ty), *] $([$($cross_reference:ident: $cross_reference_type:ty), *])? $(hidden [$($hidden_item:ident: $hidden_item_ty:ty), *])? $(=> $on_done:expr)?), * $(,)?) => {
+    ($($ty:ty [$($item:ident: $item_type:ty), * $(,)?] $([$($cross_reference:ident: $cross_reference_type:ty), * $(,)?])? $(hidden [$($hidden_item:ident: $hidden_item_ty:ty), * $(,)?])? $(=> $on_done:expr)?), * $(,)?) => {
 
         paste! {
 
@@ -375,11 +416,21 @@ macro_rules! definitions {
                     items: Vec<[< $ty Definition >]>,
                 }
 
-                impl IntoIterator for [< $ty s >] {
-                    type Item = [< $ty Definition >];
-                    type IntoIter = std::vec::IntoIter<Self::Item>;
-                    fn into_iter(self) -> Self::IntoIter {
-                        self.items.into_iter()
+                impl [< $ty s >] {
+                    pub fn add(&mut self, item: [< $ty Definition >]) {
+                        self.items.push(item);
+                    }
+
+                    pub fn iter(&self) -> std::slice::Iter<[< $ty Definition >]> {
+                        self.items.iter()
+                    }
+
+                    pub fn iter_mut(&mut self) -> std::slice::IterMut<[< $ty Definition >]> {
+                        self.items.iter_mut()
+                    }
+
+                    pub fn next_id(&self) -> usize {
+                        self.items.len()
                     }
                 }
 
@@ -401,11 +452,11 @@ macro_rules! definitions {
 
                 impl ReferenceHolder for $ty {
                     type Intermediate = String;
-                    fn intermediate(builder: &mut DefinitionBuilder, namespace: &String, value: &serde_json::Value) -> Self::Intermediate {
+                    fn intermediate(builder: &mut DefinitionBuilder, namespace: &String, value: &serde_json::Value) -> Option<Self::Intermediate> {
                         builder.[< load_ $ty:snake _cross_ref >](namespace, value)
                     }
-                    fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Self {
-                        builder.[< $ty:snake s >].get(reference).unwrap().1.into()
+                    fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Option<Self> {
+                        Some(builder.[< $ty:snake s >].get(reference)?.1.into())
                     }
                 }
 
@@ -449,9 +500,9 @@ macro_rules! definitions {
 
             impl DefinitionBuilder {
 
-                fn load_namespaces<T : Printer>(
+                fn load_namespaces(
                     &mut self, values: Vec<(PathBuf, serde_json::Value)>,
-                    printer: &T
+                    printer: &mut EventWriter<Message>
                 ) -> &mut Self {
                     // Preload the namespaces.
                     let mut mods = vec![];
@@ -459,7 +510,7 @@ macro_rules! definitions {
                         if let Some(obj) = value.1.as_object() {
                             if let Some(namespace) = obj["namespace"].as_str() {
                                 if self.loaded_namespaces.contains_key(namespace) {
-                                    printer.error(format!("Namespace {} has already been loaded.", namespace));
+                                    printer.send(Message::error(format!("Namespace {} has already been loaded.", namespace)));
                                 }
                                 else if let Some(version_str) = obj["version"].as_str() {
                                     if let Some(version) = Version::from_str(version_str) {
@@ -476,7 +527,7 @@ macro_rules! definitions {
                                                         });
                                                     }
                                                     else {
-                                                        printer.error(format!("Mod in file {} with namespace {} version constraint for dependency {} is incorrectly formatted.", value.0.display(), namespace, name));
+                                                        printer.send(Message::error(format!("Mod in file {} with namespace {} version constraint for dependency {} is incorrectly formatted.", value.0.display(), namespace, name)));
                                                         continue;
                                                     }
                                                 }
@@ -491,7 +542,7 @@ macro_rules! definitions {
                                                             });
                                                         }
                                                         else {
-                                                            printer.error(format!("Mod in file {} with namespace {} version constraint for dependency {} is incorrectly formatted.", value.0.display(), namespace, name));
+                                                            printer.send(Message::error(format!("Mod in file {} with namespace {} version constraint for dependency {} is incorrectly formatted.", value.0.display(), namespace, name)));
                                                             continue;
                                                         }
                                                     }
@@ -502,7 +553,7 @@ macro_rules! definitions {
                                         let defs = if let Some(defs) = obj["defs"].as_object() {
                                             defs
                                         } else {
-                                            printer.error(format!("Mod in file {} with namespace {} defs value is incorrectly formatted.", value.0.display(), namespace));
+                                            printer.send(Message::error(format!("Mod in file {} with namespace {} defs value is incorrectly formatted.", value.0.display(), namespace)));
                                             continue;
                                         };
 
@@ -510,17 +561,17 @@ macro_rules! definitions {
                                         self.loaded_namespaces.insert(namespace.to_string(), version);
 
                                     } else {
-                                        printer.error(format!("Mod in file {} with namespace {} version value is incorrectly formatted.", value.0.display(), namespace));
+                                        printer.send(Message::error(format!("Mod in file {} with namespace {} version value is incorrectly formatted.", value.0.display(), namespace)));
                                     }
                                 } else {
-                                    printer.error(format!("Mod in file {} with namespace {} is missing namespace key.", value.0.display(), namespace));
+                                    printer.send(Message::error(format!("Mod in file {} with namespace {} is missing namespace key.", value.0.display(), namespace)));
                                 }
                             }
                             else {
-                                printer.error(format!("Mod in file {} is missing namespace key.", value.0.display()));
+                                printer.send(Message::error(format!("Mod in file {} is missing namespace key.", value.0.display())));
                             }
                         } else {
-                            printer.error(format!("Mod in file {} is incorrectly formatted.", value.0.display()));
+                            printer.send(Message::error(format!("Mod in file {} is incorrectly formatted.", value.0.display())));
                         }
                     }
 
@@ -536,7 +587,7 @@ macro_rules! definitions {
                                     }
                                 };
                                 if delete {
-                                    printer.error(format!("Stopped loading {}, because it does not have the required dependency {}.", mods[i].0, dep.namespace));
+                                    printer.send(Message::error(format!("Stopped loading {}, because it does not have the required dependency {}.", mods[i].0, dep.namespace)));
                                     self.loaded_namespaces.remove(&dep.namespace);
                                     mods.swap_remove(i);
                                     continue 'check;
@@ -551,17 +602,20 @@ macro_rules! definitions {
                         if let Some(defs) = module.2["defs"].as_object() {
                             for (k, v) in defs {
                                 if let Some(arr) = v.as_array() {
-                                    match k.as_str() {
+                                    if match k.as_str() {
                                         $(stringify!([< $ty:snake s >]) => self.[< read_ $ty:snake _defs >](&module.0, arr),) *
 
                                         $(stringify!([< $ty:snake s_override >]) => self.[< read_ $ty:snake _overrides >](&module.0, arr),) *
 
                                         other => {
-                                            printer.error(format!("Warning: Unknown definition {} in mod {}.", other, module.0));
+                                            printer.send(Message::warning(format!("Unknown definition {} in mod {}.", other, module.0)));
+                                            Some(())
                                         },
+                                    }.is_none() {
+                                        printer.send(Message::error(format!("In definition {} in mod {}.", k.as_str(), module.0)));
                                     }
                                 } else {
-                                    printer.error(format!("Expected array for definitions of type {} in mod {}.", k, module.0));
+                                    printer.send(Message::error(format!("Expected array for definitions of type {} in mod {}.", k, module.0)));
                                 }
                             }
                         }
@@ -570,48 +624,54 @@ macro_rules! definitions {
                     self
                 }
 
-                fn build(&self, commands: &mut Commands) {
+                fn build(&self, commands: &mut Commands) -> Option<()> {
                     $(
                         #[allow(unused_mut)]
                         let mut [< $ty:snake s_defs >] = [< $ty s >] {
-                            items: self.[< $ty:snake s >].iter().map(|(k, (def, id, namespace))| {
-                                [< $ty Definition >] {
-                                    name: def.name.clone(),
-                                    namespace: namespace.clone(),
-                                    string_id: def.id.clone(),
-                                    id: *id,
-                                    $($item: def.$item.clone(),) *
-                                    $($($cross_reference: $cross_reference_type::convert(self, &def.$cross_reference),) *)?
-                                    $($($hidden_item: Default::default(),) *)?
-                                }
-                            }).collect()
-                        };
+                                items: self.[< $ty:snake s >].iter().map(|(_k, (def, id, namespace))| {
+                                    Some([< $ty Definition >] {
+                                        name: def.name.clone(),
+                                        namespace: namespace.clone(),
+                                        string_id: def.id.clone(),
+                                        id: *id,
+                                        $($item: def.$item.clone(),) *
+                                        $($($cross_reference: $cross_reference_type::convert(self, &def.$cross_reference)?,) *)?
+                                        $($($hidden_item: Default::default(),) *)?
+                                    })
+                                }).collect::<Option<Vec<[< $ty Definition >]>>>()?
+                            };
                         $($on_done(&mut [< $ty:snake s_defs >]);)?
                         commands.insert_resource([< $ty:snake s_defs >]);
                     ) *
+                    Some(())
                 }
 
 
                 $(
-                    fn [< read_ $ty:snake _overrides >](&mut self, namespace: &String, values: &Vec<serde_json::Value>) {
+                    fn [< read_ $ty:snake _overrides >](&mut self, namespace: &String, values: &Vec<serde_json::Value>) -> Option<()> {
                         for value in values {
                             if let Some(obj) = value.as_object() {
-                                let id = obj["id"].as_str().unwrap().into();
-                                self.[< load_ $ty:snake _def >](namespace, &id, obj);
+                                let id = obj["id"].as_str()?.into();
+                                self.[< load_ $ty:snake _def >](namespace, &id, obj)?;
+                            }
+                            else {
+                                return None;
                             }
                         }
+                        Some(())
                     }
 
-                    fn [< read_ $ty:snake _defs >](&mut self, namespace: &String, values: &Vec<serde_json::Value>) {
+                    fn [< read_ $ty:snake _defs >](&mut self, namespace: &String, values: &Vec<serde_json::Value>) -> Option<()> {
                         for value in values {
-                            self.[< read_ $ty:snake _def >](namespace, value);
+                            self.[< read_ $ty:snake _def >](namespace, value)?;
                         }
+                        Some(())
                     }
 
                     fn [< read_ $ty:snake _def >](&mut self, namespace: &String, value: &serde_json::Value) -> Option<String> {
                         if let Some(obj) = value.as_object() {
                             let mut def: [< $ty DefinitionUnloaded >] = Default::default();
-                            def.id = obj["id"].as_str().unwrap().into();
+                            def.id = obj["id"].as_str()?.into();
 
 
                             let string_id = namespace.clone() + def.id.as_str();
@@ -622,7 +682,7 @@ macro_rules! definitions {
                             };
 
                             self.[< $ty:snake s >].insert(string_id.clone(), (def, id, namespace.clone()));
-                            self.[< load_ $ty:snake _def >](namespace, &string_id, &obj);
+                            self.[< load_ $ty:snake _def >](namespace, &string_id, &obj)?;
 
                             Some(string_id)
                         }
@@ -632,7 +692,7 @@ macro_rules! definitions {
                     }
 
                     #[allow(unused_variables)]
-                    fn [< load_ $ty:snake _def >](&mut self, namespace: &String, def: &String, obj: &serde_json::Map<String, serde_json::Value>) {
+                    fn [< load_ $ty:snake _def >](&mut self, namespace: &String, def: &String, obj: &serde_json::Map<String, serde_json::Value>) -> Option<()> {
 
                         for (key, value) in obj {
                             match key.as_str() {
@@ -652,26 +712,26 @@ macro_rules! definitions {
                                     let value = $cross_reference_type::intermediate(self, namespace, value);
                                     let r = self.[< $ty:snake s >].get_mut(def);
                                     if let Some(r) = r {
-                                        r.0.$cross_reference = value;
+                                        r.0.$cross_reference = value?;
                                     }
                                 }) *)?
 
                                 _ => {}
                             }
                         }
+                        Some(())
                     }
 
-                    fn [< load_ $ty:snake _cross_ref >](&mut self, namespace: &String, value: &serde_json::Value) -> String {
+                    fn [< load_ $ty:snake _cross_ref >](&mut self, namespace: &String, value: &serde_json::Value) -> Option<String> {
                         if let Some(string) = value.as_str() {
                             if string.contains(':') {
-                                string.into()
+                                Some(string.into())
                             } else {
-                                gen_id(namespace, string)
+                                Some(gen_id(namespace, string))
                             }
                         }
                         else {
-
-                            self.[< read_ $ty:snake _def >](namespace, value).unwrap()
+                            self.[< read_ $ty:snake _def >](namespace, value)
                         }
                     }
                 ) *
@@ -681,8 +741,8 @@ macro_rules! definitions {
                 data: Vec<u8>,
             }
 
-            fn generate_binary(
-                commands: &mut Commands,
+            pub fn generate_binary(
+                mut commands: Commands,
                 $([< $ty:snake s>]: Res<[< $ty s>]>), *
             ) {
                 let mut obj = serde_json::Map::<String, serde_json::Value>::default();
@@ -713,6 +773,32 @@ impl Default for TextureCrop {
         Self::Full
     }
 }
+ref_struct! {
+    OreData[min_drop: usize, max_drop: usize][material: Material]
+}
+
+ref_enum! {
+    BlockType[Stone: bool][Ore: OreData, Wood: Sprite]
+}
+
+enum MeterialType {
+    Metal,
+    Mineral,
+    Wood,
+}
+
+ref_struct! {
+    Alloying[min_temp: f32, max_temp: f32][]
+}
+
+ref_enum! {
+    RecipeType
+    []
+    [
+        Alloying: Alloying
+    ]
+}
+
 // Usage:
 // $Name[($member_name: $member_type)...] optional<[($cross_reference_name: $cross_reference_type)...]> optional<hidden [($hidden_member_name: $hidden_member_type)...]>
 // optional<$lambda (&mut Commands, &Res<AssetServer>, &$Names)>
@@ -721,11 +807,24 @@ impl Default for TextureCrop {
 // Crossreferences are references to other things that are defined in json. hidden members are members that are not exposed in json.
 // They should be calculated in the lambda. $Names refers to a resource of all definitions of this type.
 definitions! {
-    Material[tool_part_proficiency: HashMap<ToolPart, ToolProfeciency>, fuel_duration: Option<f32>, density: f32][sprite: Sprite, smelts_into:Liquid],
+    Material[
+            tool_part_proficiency: Option<HashMap<ToolPart, ToolProfeciency>>,
+            fuel_duration: Option<f32>,
+            density: f32,
+            formable: bool,
+        ]
+        [
+            sprite: Sprite,
+            block_sprite: Option::<Sprite>,
+            smelts_into: Option::<Liquid>,
+        ],
     Tool[proficiencies: ToolProficiencies][parts: Vec::<ToolPartData>],
 
-    Tile[friction: f32][sprite: Sprite],
+    Model[faces: Vec<(f32, f32, f32, f32)>],
+
+    Block[friction: f32][sprite: Sprite],
     Liquid[viscocity: f32][sprite: Sprite],
+    Recipe[],
 
     BodyPart[],
 
@@ -735,24 +834,112 @@ definitions! {
     Sfx[pitch: f32, volume: f32][sound: Sound],
 
 
-    Texture[location: String] hidden [],
+    Texture[location: String],
     Sound[location: String],
 }
 
-fn init_definitions<T : Printer>(commands: &mut Commands, printer: &T) {
-    let paths = read_dir("./mods/").unwrap();
+pub enum MessageType {
+    Error,
+    Warning,
+    Info,
+    Message,
+}
+pub struct Message {
+    ty: MessageType,
+    message: String,
+}
 
-    let mods: Vec<(PathBuf, serde_json::Value)> = paths
-        .filter_map(|path| {
-            let path = path.ok()?.path();
-            Some((
-                path.clone(),
-                serde_json::from_str(read_to_string(path).ok()?.as_str()).ok()?,
-            ))
+impl Message {
+    fn error(message: String) -> Self {
+        Self {
+            ty: MessageType::Error,
+            message: message,
+        }
+    }
+    fn warning(message: String) -> Self {
+        Self {
+            ty: MessageType::Warning,
+            message: message,
+        }
+    }
+}
+
+impl Display for Message {
+    fn fmt(&self, fm: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        match self.ty {
+            MessageType::Error => write!(fm, "Error: "),
+            MessageType::Warning => write!(fm, "Warning: "),
+            MessageType::Info => write!(fm, "Info: "),
+            _ => Ok(()),
+        }?;
+        write!(fm, "{}", self.message)
+    }
+}
+
+fn init_definitions(mut commands: Commands, mut printer: EventWriter<Message>) {
+    if let Ok(paths) = read_dir("./mods/") {
+        let mods: Vec<(PathBuf, serde_json::Value)> = paths
+            .filter_map(|path| {
+                let path = path.ok()?.path();
+                Some((
+                    path.clone(),
+                    serde_json::from_str(read_to_string(path).ok()?.as_str()).ok()?,
+                ))
+            })
+            .collect();
+
+        if DefinitionBuilder::default()
+            .load_namespaces(mods, &mut printer)
+            .build(&mut commands)
+            .is_none()
+        {
+            printer.send(Message::error(
+                "Error when building. Probably because of missing/misspelled definition".into(),
+            ));
+        }
+    } else {
+        printer.send(Message::error("Unable to find mod folder".into()));
+        DefinitionBuilder::default().build(&mut commands);
+    }
+}
+
+fn generate_blocks(
+    mut blocks: ResMut<Blocks>,
+    mut recipes: ResMut<Recipes>,
+    materials: Res<Materials>,
+    liquids: Res<Liquids>,
+) {
+    for liquid in liquids.iter() {
+        let id = blocks.next_id();
+        blocks.add(BlockDefinition {
+            id,
+            name: liquid.name.clone(),
+            string_id: format!("liquid_{}", liquid.id),
+            namespace: liquid.namespace.clone(),
+            friction: liquid.viscocity,
+            sprite: liquid.sprite,
         })
-        .collect();
+    }
+    for material in materials.iter() {}
+}
 
-    DefinitionBuilder::default()
-        .load_namespaces(mods, printer)
-        .build(commands);
+pub struct Definitions;
+
+impl Plugin for Definitions {
+    fn build(&self, app: &mut bevy::prelude::AppBuilder) {
+        app.add_startup_stage(
+            "init",
+            SystemStage::single_threaded().with_system(init_definitions.system()),
+        )
+        .add_startup_stage_after(
+            "init",
+            "generate",
+            SystemStage::parallel().with_system(generate_blocks.system()),
+        )
+        .add_startup_stage_after(
+            "generate",
+            "binary",
+            SystemStage::single_threaded().with_system(generate_binary.system()),
+        );
+    }
 }

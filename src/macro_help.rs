@@ -1,22 +1,18 @@
-
 #[macro_export]
 macro_rules! count_idents {
     ($($idents:ident),* $(,)?) => {
         {
             #[derive(Copy, Clone)]
             #[allow(dead_code, non_camel_case_types)]
-            
+
             enum Counter { $($idents,)* LastIdent }
             Counter::LastIdent as usize
         }
     };
 }
 
-
 pub mod useless {
-    pub struct Dummy {
-
-    }
+    pub struct Dummy {}
     pub trait Trait<const SIZE: usize> {
         type Value;
     }
@@ -25,6 +21,7 @@ pub mod useless {
             type Value = u8;
         }
     });
+
     seq_macro::seq!(N in 9..=16 {
         impl Trait<N> for Dummy {
             type Value = u16;
@@ -51,18 +48,24 @@ pub mod useless {
 macro_rules! get_type {
     ($num:expr) => {
         <crate::macro_help::useless::Dummy as crate::macro_help::useless::Trait<$num>>::Value
-    }
+    };
 }
 
+pub trait Bitmap {
+    const FIELD_COUNT: usize;
+    fn empty() -> Self;
+    fn is_empty(&self) -> bool;
+    fn is(&self, other: Self) -> bool;
+}
 
 #[macro_export]
 macro_rules! bitmap_inner {
     ($ty:ty, $data:expr, $current_value:ident) => {
-        pub const $current_value: $ty = <$ty>::create(1 << $data);
+        pub const $current_value: $ty = $ty(1 << $data);
     };
-    ($ty:ty, $data:expr, $current_value:ident, $($value:ident), *) => {
+    ($ty:ty, $data:expr, $current_value:ident, $($value:ident), +) => {
         crate::bitmap_inner!($ty, $data, $current_value);
-        crate::bitmap_inner!($ty, $data + 1, $($value), *);
+        crate::bitmap_inner!($ty, ($data + 1), $($value), +);
     }
 }
 
@@ -70,23 +73,21 @@ macro_rules! bitmap_inner {
 macro_rules! bitmap {
     ($acc:vis $name:ident: $ty:ty[$($value:ident), * $(,)?]) => {
         #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-        struct $name($ty);
+        $acc struct $name($ty);
         #[allow(non_upper_case_globals)]
         impl $name {
             crate::bitmap_inner!($name, 0, $($value), *);
-            const FIELD_COUNT: usize = count_idents!($($value), *);
+        }
 
-            pub fn empty() -> Self {
+        impl crate::macro_help::Bitmap for $name {
+            const FIELD_COUNT: usize = count_idents!($($value), *);
+            fn empty() -> Self {
                 Default::default()
             }
-            const fn create(data: $ty) -> Self {
-                Self(data)
-            }
-            pub fn is_empty(&self) -> bool {
+            fn is_empty(&self) -> bool {
                 self.0 == 0
             }
-
-            pub fn is(&self, other: Self) -> bool {
+            fn is(&self, other: Self) -> bool {
                 !other.is_empty() && (other - *self).is_empty()
             }
         }
@@ -152,7 +153,6 @@ macro_rules! bitmap {
     }
 }
 
-
 #[macro_export]
 macro_rules! match_bits {
     ($m:expr; $($($expr:expr), + => $block:block $(,)?) * $(,)? _ => $else_block:block $(,)?) => {
@@ -177,4 +177,17 @@ macro_rules! match_bits_all {
 macro_rules! serializable {
     ($i:item) => { #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)] $i };
     ($($i:item) +) => { $(serializable! { $i }) + };
+}
+
+#[macro_export]
+macro_rules! cmap {
+    ($from:ident[$start:literal..$end:literal] $expr:expr) => {
+        seq_macro::seq!( N in $start..$end {
+            [
+                #(
+                    ($expr)($from[N]),
+                )*
+            ]
+        })
+    }
 }
