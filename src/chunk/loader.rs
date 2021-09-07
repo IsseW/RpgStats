@@ -8,11 +8,7 @@ use futures_lite::future::{block_on, poll_once};
 use rand::{thread_rng, Rng};
 use simdnoise::NoiseBuilder;
 
-use super::{
-    chunk::{ChunkData, ChunkPosition, Chunks},
-    ordered_float::OrderedFloat,
-    voxel::{VoxelArray, CHUNK_SIZE},
-};
+use super::{chunk::{ChunkData, ChunkPosition, Chunks}, meshing::ChunkMesh, ordered_float::OrderedFloat, voxel::{VoxelArray, CHUNK_SIZE}};
 
 #[derive(Default)]
 pub struct ChunkGenerator {
@@ -38,18 +34,24 @@ fn calculate_chunk_pos(
 
 fn chunk_generator_handler(
     mut commands: Commands,
-    mut tasks: Query<(Entity, &mut Task<ChunkData>, &TaskInfo)>,
+    mut tasks: Query<(Entity, &mut Task<ChunkData>, &TaskInfo, &ChunkPosition)>,
     mut gen: Query<&mut ChunkGenerator>,
+    mut chunks: ResMut<Chunks>,
 ) {
-    for (entity, mut task, info) in tasks.iter_mut() {
+    for (entity, mut task, info, pos) in tasks.iter_mut() {
         if let Some(data) = block_on(poll_once(&mut *task)) {
             if data.num_voxels > 0 {
                 commands.entity(entity).insert(data);
+                if data.num_voxels == CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE {
+                    commands.entity(entity).insert(ChunkMesh);
+                }
             }
             commands
                 .entity(entity)
                 .remove::<Task<ChunkData>>()
                 .remove::<TaskInfo>();
+            chunks.loaded.get_mut(&pos.0).unwrap().1 = true;
+
             if let Ok(mut gen) = gen.get_mut(info.sender) {
                 gen.gen_job_count -= 1;
             }
@@ -101,7 +103,7 @@ fn chunk_loader(
         if gen.gen_list_index == 0 && !gen.deleting {
             let max = load_settings.unload_distance * load_settings.unload_distance;
             let chunks: Vec<(IVec3, Entity)> =
-                chunks.loaded.iter().map(|(k, v)| (*k, *v)).collect();
+                chunks.loaded.iter().map(|(k, (e, b))| (*k, *e)).collect();
             let pos = gen.chunk_pos.as_f32() * CHUNK_SIZE as f32;
             let task = thread_pool.spawn(async move {
                 let mut delete = vec![];
@@ -133,7 +135,7 @@ fn chunk_loader(
                     .insert(gen_task)
                     .insert(TaskInfo::new(entity))
                     .id();
-                chunks.loaded.insert(c, e);
+                chunks.loaded.insert(c, (e, false));
             }
 
             gen.gen_list_index += 1;
@@ -196,10 +198,10 @@ pub struct LoadSettings {
 
 fn init_load_settings(mut commands: Commands) {
     let mut load_settings = LoadSettings {
-        load_distance: 600.,
-        unload_distance: 700.,
-        generated_per_frame: 30,
-        meshed_per_frame: 10,
+        load_distance: 700.,
+        unload_distance: 850.,
+        generated_per_frame: 60,
+        meshed_per_frame: 25,
         ..Default::default()
     };
     let extent = (load_settings.load_distance / CHUNK_SIZE as f32) as i32;

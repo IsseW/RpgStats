@@ -17,7 +17,7 @@ fn debug_info(egui_context: Res<EguiContext>, diagnostics: Res<Diagnostics>) {
             if let Some(value) = diagnostic.value() {
                 ui.heading(&*diagnostic.name);
 
-                ui.label(format!("{}", value as usize));
+                ui.label(format!("{}", (value * 100.).round() / 100.));
             }
         }
     });

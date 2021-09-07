@@ -141,7 +141,7 @@ fn chunk_edit_system<E: ChunkEdit>(
     for (ee, e) in edits.iter_mut() {
         let res = e.get_result();
         for (chunk, res) in res {
-            if let Some(&entity) = chunks.loaded.get(chunk) {
+            if let Some(&entity) = chunks.get(chunk) {
                 if e.get_voxel().is_empty() {
                     if let Ok(mut data) = data_query.get_mut(entity) {
                         match res {

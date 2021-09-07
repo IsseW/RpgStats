@@ -1,6 +1,5 @@
-
+use rand::{thread_rng, Rng};
 use std::{collections::HashMap, ops::Index};
-use rand::{Rng, thread_rng};
 
 use crate::stats::*;
 
@@ -30,13 +29,20 @@ pub trait StatAccessor {
 }
 
 impl StatAccessor for Stat {
-    
-        fn get_value(&self, stats: &Stats) -> f32 { stats[*self] }
-        fn get_base_value(&self, stats: &Stats) -> f32 { *stats.stats_uncalculated.get(self).unwrap_or(&0.0) }
+    fn get_value(&self, stats: &Stats) -> f32 {
+        stats[*self]
+    }
+    fn get_base_value(&self, stats: &Stats) -> f32 {
+        *stats.stats_uncalculated.get(self).unwrap_or(&0.0)
+    }
 }
 impl StatAccessor for BaseStat {
-        fn get_value(&self, stats: &Stats) -> f32 { stats[*self] }
-        fn get_base_value(&self, stats: &Stats) -> f32 { stats.base_stats_uncalculated[*self] }
+    fn get_value(&self, stats: &Stats) -> f32 {
+        stats[*self]
+    }
+    fn get_base_value(&self, stats: &Stats) -> f32 {
+        stats.base_stats_uncalculated[*self]
+    }
 }
 
 impl Stats {
@@ -58,45 +64,62 @@ impl Stats {
     }
 
     pub fn set_stat(&mut self, stat: Stat, value: f32) {
-        if self.stats_uncalculated.insert(stat, value) != Some(value) { 
-            self.recalculate_stat(stat, value); 
+        if self.stats_uncalculated.insert(stat, value) != Some(value) {
+            self.recalculate_stat(stat, value);
         }
     }
 
     pub fn mul_stat(&mut self, stat: Stat, value: f32) {
-        if value == 0.0 { panic!() }
-        if value == 1.0 { return; }
-        self.stats_add.insert(stat, self.stats_mul.get(&stat).unwrap_or(&1.0) * value);
-        if self.stats_add[&stat] == 1.0 {
+        if (value - 0.0f32).abs() < std::f32::MIN {
+            panic!()
+        }
+        if (value - 1.0f32).abs() < std::f32::MIN {
+            return;
+        }
+        self.stats_add
+            .insert(stat, self.stats_mul.get(&stat).unwrap_or(&1.0) * value);
+        if (self.stats_add[&stat] - 1.0f32).abs() < std::f32::MIN {
             self.stats.remove(&stat);
         }
         self.recalculate_stat(stat, *self.stats.get(&stat).unwrap_or(&0.0));
     }
 
     pub fn add_stat(&mut self, stat: Stat, value: f32) {
-        if value == 0.0 { return; }
-        self.stats_add.insert(stat, self.stats_add.get(&stat).unwrap_or(&0.0) + value);
-        if self.stats_add[&stat] == 0.0 { 
+        if value == 0.0 {
+            return;
+        }
+        self.stats_add
+            .insert(stat, self.stats_add.get(&stat).unwrap_or(&0.0) + value);
+        if self.stats_add[&stat] == 0.0 {
             self.stats.remove(&stat);
         }
         self.recalculate_stat(stat, *self.stats.get(&stat).unwrap_or(&0.0));
     }
 
     fn recalculate_stat(&mut self, stat: Stat, current: f32) {
-        self.stats.insert(stat, (current + self.stats_add.get(&stat).unwrap_or(&0.0)) 
-                                    * self.stats_mul.get(&stat).unwrap_or(&1.0));
+        self.stats.insert(
+            stat,
+            (current + self.stats_add.get(&stat).unwrap_or(&0.0))
+                * self.stats_mul.get(&stat).unwrap_or(&1.0),
+        );
         stat.on_updated(self);
     }
 
     pub fn add_base(&mut self, stat: BaseStat, value: f32) {
-        if value == 0.0 { return; }
+        if value == 0.0 {
+            return;
+        }
         self.base_stats_uncalculated[stat] += value;
         self.recalculate_base_stat(stat);
     }
 
     pub fn mul_base(&mut self, stat: BaseStat, value: f32) {
-        if value == 0.0 { panic!() }
-        if value == 1.0 { return; }
+        if (value - 0.0f32).abs() < std::f32::MIN {
+            panic!()
+        }
+        if (value - 1.0f32).abs() < std::f32::MIN {
+            return;
+        }
         self.base_stats_mul[stat] *= value;
         self.recalculate_base_stat(stat);
     }
@@ -111,15 +134,23 @@ impl Stats {
     }
 
     pub fn update_resources(&mut self, delta: f32) {
-        let t: Vec<_> = self.resources.iter().map(|(&res, &val)| {
-            (res, (val + res.regen(self) * delta).clamp(0.0, res.max(self)))
-        }).collect();
+        let t: Vec<_> = self
+            .resources
+            .iter()
+            .map(|(&res, &val)| {
+                (
+                    res,
+                    (val + res.regen(self) * delta).clamp(0.0, res.max(self)),
+                )
+            })
+            .collect();
         self.resources.extend(t);
     }
 
     pub fn add_resource(&mut self, resource: Resource, max: bool) {
         if !self.resources.contains_key(&resource) {
-            self.resources.insert(resource, if max { resource.max(self) } else { 0.0 });
+            self.resources
+                .insert(resource, if max { resource.max(self) } else { 0.0 });
         }
     }
 
@@ -130,48 +161,42 @@ impl Stats {
                     if *val >= f {
                         *val -= f;
                         true
-                    }
-                    else {
+                    } else {
                         false
                     }
                 }
                 ConsumptionType::Percent(f) => {
-                    if *val > 0.0 { 
+                    if *val > 0.0 {
                         *val *= 1.0 - f;
                         true
-                    }
-                    else {
+                    } else {
                         false
                     }
                 }
             }
-        }
-        else {
+        } else {
             false
         }
     }
 
-    pub fn get_base<T : StatAccessor>(&self, accessor: T) -> f32 {
+    pub fn get_base<T: StatAccessor>(&self, accessor: T) -> f32 {
         accessor.get_base_value(self)
     }
 
-    pub fn apply_damage(&mut self, dmg : &Dmg) -> DmgResult {
+    pub fn apply_damage(&mut self, dmg: &Dmg) -> DmgResult {
         let dodge = if dmg.can_dodge() {
             let z = dmg.get_speed() - self[Stat::DodgeTime] + self[Stat::ReactionTime];
             (if dmg.get_speed() < self[Stat::DodgeTime] - self[Stat::ReactionTime] + 0.5 {
                 (z - 1.0) / (z - 1.5)
-            }
-            else {
+            } else {
                 1.0 - z / (z + 0.5)
             }) < thread_rng().gen::<f32>()
-        }
-        else {
+        } else {
             false
         };
         if dodge {
             DmgResult::Dodge
-        }
-        else {
+        } else {
             *self.resources.get_mut(&Resource::HP).unwrap() -= dmg.calculate_taken(self).sum();
             DmgResult::Hit
         }

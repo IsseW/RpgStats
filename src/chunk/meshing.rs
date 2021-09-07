@@ -1,5 +1,5 @@
 use super::{
-    chunk::{ChunkData, ChunkPosition},
+    chunk::{ChunkData, ChunkPosition, Chunks},
     loader::{LoadSettings, TaskInfo},
     ordered_float::OrderedFloat,
     shader::Pipeline,
@@ -14,6 +14,7 @@ use futures_lite::future::{block_on, poll_once};
 use bevy::{prelude::*, render::pipeline::PrimitiveTopology, tasks::Task};
 
 // Translated to rust from https://github.com/roboleary/GreedyMesh
+// TODO: sample mesh from neighbouring chunks.
 fn greedy_meshing<F: FnMut(([f32; 3], [f32; 3], [f32; 3], [f32; 3]), Voxel, Face, bool)>(
     mut quad: F,
     data: &ChunkData,
@@ -187,6 +188,7 @@ pub struct MeshData {
 
 fn chunk_mesh_generator(
     mut commands: Commands,
+    chunk_container: Res<Chunks>,
     chunks: Query<(Entity, &ChunkPosition, &ChunkData), Without<ChunkMesh>>,
     thread_pool: Res<AsyncComputeTaskPool>,
     mut gen: Query<(Entity, &mut ChunkGenerator)>,
@@ -194,7 +196,17 @@ fn chunk_mesh_generator(
 ) {
     for (entity, mut gen) in gen.iter_mut() {
         if gen.mesh_job_count < load_settings.meshed_per_frame {
-            let mut to_load: Vec<(Entity, &ChunkPosition, &ChunkData)> = chunks.iter().collect();
+            let mut to_load: Vec<(Entity, &ChunkPosition, &ChunkData)> = chunks
+                .iter()
+                .filter(|(_, position, _)| {
+                    chunk_container.is_generated(&(position.0 + IVec3::X))
+                        && chunk_container.is_generated(&(position.0 - IVec3::X))
+                        && chunk_container.is_generated(&(position.0 + IVec3::Y))
+                        && chunk_container.is_generated(&(position.0 - IVec3::Y))
+                        && chunk_container.is_generated(&(position.0 + IVec3::Z))
+                        && chunk_container.is_generated(&(position.0 - IVec3::Z))
+                })
+                .collect();
             to_load.sort_by_cached_key(|(_, p, _)| {
                 OrderedFloat(p.0.as_f32().distance_squared(gen.chunk_pos.as_f32()))
             });
@@ -206,8 +218,12 @@ fn chunk_mesh_generator(
                 if to_load[i].2.num_voxels == 0 {
                     commands
                         .entity(to_load[i].0)
-                        .remove::<ChunkMesh>()
                         .remove::<ChunkData>()
+                        .remove_bundle::<MeshBundle>();
+                } else if to_load[i].2.num_voxels == CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE {
+                    commands
+                        .entity(to_load[i].0)
+                        .insert(ChunkMesh)
                         .remove_bundle::<MeshBundle>();
                 } else {
                     let data = *to_load[i].2;

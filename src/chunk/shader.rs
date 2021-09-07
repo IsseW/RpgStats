@@ -32,7 +32,7 @@ void main() {
                     ((Vertex_Position >>  8) & 7) / 7.0, 
                     ((Vertex_Position >>  5) & 7) / 7.0) * ((Vertex_Position & 31) / 31.0);
     vec3 normal = NORMALS[(Vertex_Position >> 14) & 7];
-    v_color = color.xyz * (0.5 + dot(up, normal) * 0.5);
+    v_color = vec3(0.0, (color.x + color.y + color.z) / 3.0, 0.0) * (0.5 + dot(up, normal) * 0.5);
 }
 "#;
 
