@@ -1,10 +1,8 @@
 
-use crate::bitmap;
 use crate::defs;
 
 use crate::serializable;
 use serde::{Serialize, Deserialize};
-use crate::count_idents;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ToolPart {

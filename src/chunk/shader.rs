@@ -8,7 +8,7 @@ use bevy::{
 
 pub const VERTEX: &str = r#"
 #version 450
-layout(location = 0) in uint Vertex_Position;
+layout(location = 0) in uvec2 vdata;
 layout(location = 0) out vec3 v_color;
 layout(set = 0, binding = 0) uniform CameraViewProj {
     mat4 ViewProj;
@@ -26,13 +26,13 @@ const vec3 NORMALS[6] = {
 };
 const vec3 up = vec3(0.0, 1.0, 0.0);
 void main() {
-    vec3 position = vec3((Vertex_Position >> 27) & 31, (Vertex_Position >> 22) & 31, (Vertex_Position >> 17) & 31);
+    vec3 position = vec3((vdata.x >> 24) & 31, (vdata.x >> 16) & 31, (vdata.x >> 8) & 31);
     gl_Position = ViewProj * Model * vec4(position, 1.0);
-    vec3 color = vec3(((Vertex_Position >> 11) & 7) / 7.0, 
-                    ((Vertex_Position >>  8) & 7) / 7.0, 
-                    ((Vertex_Position >>  5) & 7) / 7.0) * ((Vertex_Position & 31) / 31.0);
-    vec3 normal = NORMALS[(Vertex_Position >> 14) & 7];
-    v_color = vec3(0.0, (color.x + color.y + color.z) / 3.0, 0.0) * (0.5 + dot(up, normal) * 0.5);
+
+    vec3 color = vec3((vdata.y >> 24) & 0xFF, (vdata.y >> 16) & 0xFF, (vdata.y >> 8) & 0xFF);
+    vec3 normal = NORMALS[(vdata.x >> 5) & 7];
+
+    v_color = color * ((1.5 + dot(up, normal)) / 5.0);
 }
 "#;
 

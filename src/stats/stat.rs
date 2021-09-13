@@ -1,5 +1,5 @@
 use crate::count_idents;
-use crate::stats::{BaseStat, Stats, Resource};
+use crate::stats::{BaseStat, Resource, Stats};
 use paste::paste;
 
 macro_rules! base_stat_check {
@@ -24,7 +24,7 @@ macro_rules! stat_check {
         }
     };
     ($m:ident, $stats:ident, $($name1:ident) *, $($name2:ident [$($name3: ident), *]) *) => {
-        stat_check!($m, $($name1) *, $(|ty| { $(if ty == Stat::$name3 { $stats.update_stat(Stat::$name2) } ), *}); *)
+        stat_check!($m, $($name1) *, $(|_ty| { $(if _ty == Stat::$name3 { $stats.update_stat(Stat::$name2) } ), *}); *)
     }
 }
 
@@ -262,7 +262,7 @@ stats! {
     [
         MaxHealth: Vitality, Strength: : |stats: &mut Stats| {
             let t = 0.0f32.max(stats[BaseStat::Vitality] * 7.0 + stats[BaseStat::Strength] * 3.0);
-            if t > 0.0 { 
+            if t > 0.0 {
                 stats.add_resource(Resource::HP, true);
             }
             t
@@ -272,7 +272,7 @@ stats! {
         },
         MaxMana: Wisdom, Intelligence: : |stats: &mut Stats| {
             let t = 0.0f32.max(stats[BaseStat::Wisdom] * 7.0 + (stats[BaseStat::Intelligence] - 20.0) * 3.0);
-            if t > 0.0 { 
+            if t > 0.0 {
                 stats.add_resource(Resource::Mana, true);
             }
             t

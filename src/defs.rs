@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use bevy::utils::HashMap;
 use core::fmt::Display;
 use paste::paste;
+use seq_macro::seq;
 use serde::{Deserialize, Serialize};
 use std::ops::{Index, IndexMut};
 use std::path::PathBuf;
@@ -64,6 +65,12 @@ literal_key!(i128);
 
 string_key!(String);
 string_key!(ToolPart);
+
+trait NonReference {}
+
+impl<T: StringKey> NonReference for T {}
+impl NonReference for f32 {}
+impl NonReference for f64 {}
 
 trait ReferenceHolder
 where
@@ -183,9 +190,55 @@ impl<T: ReferenceHolder> ReferenceHolder for Option<T> {
     }
 }
 
-macro_rules! ref_tuples {
-    ($($num_elements:literal), *) => {};
+impl<'de, T: NonReference + Clone + serde::de::DeserializeOwned> ReferenceHolder for T {
+    type Intermediate = T;
+
+    fn intermediate(
+        _builder: &mut DefinitionBuilder,
+        _namespace: &String,
+        value: &serde_json::Value,
+    ) -> Option<Self::Intermediate> {
+        serde_json::from_value(value.clone()).ok()
+    }
+
+    fn convert(_builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Option<Self> {
+        Some(reference.clone())
+    }
 }
+
+macro_rules! ref_tuples {
+    ($($num_elements:literal), *) => {
+        $(
+            seq!(N in 0..$num_elements {
+                impl<#(T#N : ReferenceHolder,)*> ReferenceHolder for (#(T#N,)*) {
+                    type Intermediate = (#(T#N::Intermediate,)*);
+
+                    fn intermediate(
+                        builder: &mut DefinitionBuilder,
+                        namespace: &String,
+                        value: &serde_json::Value,
+                    ) -> Option<Self::Intermediate> {
+                        if let Some(arr) = value.as_array() {
+                            Some((
+                                #(T#N::intermediate(builder, namespace, &arr[N])?,)*
+                            ))
+                        } else {
+                            None
+                        }
+                    }
+
+                    fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Option<Self> {
+                        Some((
+                                #(T#N::convert(builder, &reference.N)?,)*
+                            ))
+                    }
+                }
+            });
+        ) *
+    };
+}
+
+ref_tuples!(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
 
 macro_rules! ref_struct {
     ($ty:ident [$($field:ident: $field_ty:ty), *][$($ref_field:ident: $ref_field_ty:ty), *]) => {
@@ -204,21 +257,21 @@ macro_rules! ref_struct {
             impl ReferenceHolder for $ty {
                 type Intermediate = [< $ty Intermediate>];
 
-                fn intermediate(builder: &mut DefinitionBuilder, namespace: &String, value: &serde_json::Value) -> Option<Self::Intermediate> {
+                fn intermediate(_builder: &mut DefinitionBuilder, _namespace: &String, value: &serde_json::Value) -> Option<Self::Intermediate> {
                     if let Some(obj) = value.as_object() {
                         Some([< $ty Intermediate>] {
                             $($field: serde_json::from_value(obj[stringify!($field)].clone()).ok()?,) *
-                            $($ref_field: <$ref_field_ty as ReferenceHolder>::intermediate(builder, namespace, &obj[stringify!($ref_field)])?,) *
+                            $($ref_field: <$ref_field_ty as ReferenceHolder>::intermediate(_builder, _namespace, &obj[stringify!($ref_field)])?,) *
                         })
                     }
                     else {
                         None
                     }
                 }
-                fn convert(builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Option<Self> {
+                fn convert(_builder: &DefinitionBuilder, reference: &Self::Intermediate) -> Option<Self> {
                     Some(Self {
                         $($field: reference.$field.clone(),) *
-                        $($ref_field: <$ref_field_ty as ReferenceHolder>::convert(builder, &reference.$ref_field)?,) *
+                        $($ref_field: <$ref_field_ty as ReferenceHolder>::convert(_builder, &reference.$ref_field)?,) *
                     })
                 }
             }
@@ -635,7 +688,7 @@ macro_rules! definitions {
                                         string_id: def.id.clone(),
                                         id: *id,
                                         $($item: def.$item.clone(),) *
-                                        $($($cross_reference: $cross_reference_type::convert(self, &def.$cross_reference)?,) *)?
+                                        $($($cross_reference: <$cross_reference_type>::convert(self, &def.$cross_reference)?,) *)?
                                         $($($hidden_item: Default::default(),) *)?
                                     })
                                 }).collect::<Option<Vec<[< $ty Definition >]>>>()?
@@ -709,7 +762,7 @@ macro_rules! definitions {
                                     }
                                 }) *
                                 $($(stringify!($cross_reference) => {
-                                    let value = $cross_reference_type::intermediate(self, namespace, value);
+                                    let value = <$cross_reference_type>::intermediate(self, namespace, value);
                                     let r = self.[< $ty:snake s >].get_mut(def);
                                     if let Some(r) = r {
                                         r.0.$cross_reference = value?;
@@ -830,7 +883,7 @@ definitions! {
 
     Species[][],
 
-    Sprite[color: (u8, u8, u8), crop: TextureCrop][texture: Texture],
+    Sprite[color: (u8, u8, u8), crop: TextureCrop][texture: (Texture, u8, f32, Sound, (BodyPart, Species))],
     Sfx[pitch: f32, volume: f32][sound: Sound],
 
 
@@ -853,7 +906,7 @@ impl Message {
     fn error(message: String) -> Self {
         Self {
             ty: MessageType::Error,
-            message: message,
+            message,
         }
     }
     fn warning(message: String) -> Self {

@@ -1,234 +1,253 @@
-use bevy::utils::HashMap;
-use bevy::{math::DVec3, prelude::*};
+use std::mem::{self, MaybeUninit};
+
+use crate::{chunk::chunk::get_child_position, cmap, world::WorldOptions};
+
+use super::{
+    chunk::{
+        ChildChunks, ChunkData, ChunkDataTask, ChunkPosition, ChunkState, Chunks, DataFlags,
+        CHUNK_SIZE,
+    },
+    generator::{Generator, GeneratorData},
+    mesher::ChunkMesh,
+    voxel::*,
+    GeneratorOptions,
+};
 use bevy::{
-    math::{Vec3Swizzles, Vec4Swizzles},
+    prelude::*,
     tasks::{AsyncComputeTaskPool, Task},
 };
 use futures_lite::future::{block_on, poll_once};
-use rand::{thread_rng, Rng};
 use simdnoise::NoiseBuilder;
 
-use super::{chunk::{ChunkData, ChunkPosition, Chunks}, meshing::ChunkMesh, ordered_float::OrderedFloat, voxel::{VoxelArray, CHUNK_SIZE}};
+struct CPO<const V: u32>;
 
-#[derive(Default)]
-pub struct ChunkGenerator {
-    pub chunk_pos: IVec3,
-    pub gen_list_index: usize,
-    pub gen_job_count: usize,
-    pub mesh_job_count: usize,
+impl<const V: u32> CPO<V> {
+    const RES: u32 = V + 1;
+}
+struct CMO<const V: u32>;
 
-    deleting: bool,
+impl<const V: u32> CMO<V> {
+    const RES: u32 = V - 1;
 }
 
-fn calculate_chunk_pos(
-    mut query: Query<(&mut ChunkGenerator, &GlobalTransform), Changed<GlobalTransform>>,
+fn generate_voxel(
+    x: usize,
+    y: usize,
+    z: usize,
+    strength: f32,
+    p: Vec3,
+    voxels: &mut VoxelArray,
+    empty: &mut bool,
+    full: &mut bool,
 ) {
-    for (mut generator, transform) in query.iter_mut() {
-        let new = (transform.translation / CHUNK_SIZE as f32).as_i32();
-        if generator.chunk_pos != new {
-            generator.chunk_pos = new;
-            generator.gen_list_index = 0;
+    fn get_id(x: f32, y: f32, z: f32) -> u8 {
+        ((((x * z * y) as i32 ^ (x + z + y) as i32) % 9).abs() + 1) as u8
+    }
+
+    if strength <= 0.0 {
+        *full = false;
+        *voxels.at_mut(x, y, z) = Voxel { id: 0 }
+    } else {
+        *empty = false;
+        *voxels.at_mut(x, y, z) = Voxel {
+            id: get_id(p.x, p.y, p.z),
         }
     }
 }
 
-fn chunk_generator_handler(
-    mut commands: Commands,
-    mut tasks: Query<(Entity, &mut Task<ChunkData>, &TaskInfo, &ChunkPosition)>,
-    mut gen: Query<&mut ChunkGenerator>,
-    mut chunks: ResMut<Chunks>,
-) {
-    for (entity, mut task, info, pos) in tasks.iter_mut() {
-        if let Some(data) = block_on(poll_once(&mut *task)) {
-            if data.num_voxels > 0 {
-                commands.entity(entity).insert(data);
-                if data.num_voxels == CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE {
-                    commands.entity(entity).insert(ChunkMesh);
-                }
-            }
-            commands
-                .entity(entity)
-                .remove::<Task<ChunkData>>()
-                .remove::<TaskInfo>();
-            chunks.loaded.get_mut(&pos.0).unwrap().1 = true;
+fn generate_chunk<const DEPTH: u32>(p: IVec3, seed: i32) -> ChunkData<DEPTH> {
+    let p = (p.as_f32() * CHUNK_SIZE as f32 - Vec3::ONE) * 2f32.powi(DEPTH as i32);
 
-            if let Ok(mut gen) = gen.get_mut(info.sender) {
-                gen.gen_job_count -= 1;
-            }
-        }
-    }
-}
-
-fn generate_chunk(pos: IVec3, seed: i32) -> ChunkData {
-    let p = pos.as_f32() * CHUNK_SIZE as f32;
-    let noise1 = NoiseBuilder::fbm_2d_offset(p.x, CHUNK_SIZE, p.z, CHUNK_SIZE)
+    let noise = NoiseBuilder::fbm_2d_offset(p.x, CHUNK_SIZE, p.z, CHUNK_SIZE)
         .with_seed(seed)
-        .with_freq(0.005)
+        .with_freq(0.005 / (2 << DEPTH) as f32)
         .with_octaves(8)
         .generate()
         .0;
-    let noise2 = NoiseBuilder::ridge_3d_offset(p.x, CHUNK_SIZE, p.y, CHUNK_SIZE, p.z, CHUNK_SIZE)
-        .with_seed(seed)
-        .generate()
-        .0;
+    let mut voxels = VoxelArray::empty();
+    let mut empty = true;
+    let mut full = true;
 
-    let mut voxels = VoxelArray::default();
-    let mut num_voxels = 0;
     for y in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
             for x in 0..CHUNK_SIZE {
-                let p = pos.as_f32() * CHUNK_SIZE as f32 + Vec3::new(x as f32, y as f32, z as f32)
-                    - Vec3::ONE * CHUNK_SIZE as f32 / 2.;
+                let p = p + Vec3::new(x as f32, y as f32, z as f32) * 2f32.powi(DEPTH as i32);
+                let strength = noise[z * CHUNK_SIZE + x] * 300. - p.y;
 
-                if noise1[z * CHUNK_SIZE + x] * 300. > p.y
-                    && noise2[y * CHUNK_SIZE * CHUNK_SIZE + z * CHUNK_SIZE + x] > 0.
-                {
-                    num_voxels += 1;
-                    voxels[y][z][x].id = ((p.x * p.z * p.y % 9.).abs() + 1.) as u8;
-                }
+                generate_voxel(x, y, z, strength, p, &mut voxels, &mut empty, &mut full);
             }
         }
     }
-    ChunkData { voxels, num_voxels }
+    ChunkData::<DEPTH> {
+        voxels: Box::new(voxels),
+        flags: if empty {
+            DataFlags::Empty
+        } else if full {
+            DataFlags::Full
+        } else {
+            DataFlags::None
+        },
+    }
 }
 
-fn chunk_loader(
+fn load_chunks(
     mut commands: Commands,
-    mut chunks: ResMut<Chunks>,
-    load_settings: Res<LoadSettings>,
-    mut gen: Query<(Entity, &mut ChunkGenerator)>,
+    mut chunks: ResMut<Chunks<0>>,
+    options: Res<GeneratorOptions>,
+    mut generators: Query<(Entity, &Generator, &mut GeneratorData<0>)>,
     thread_pool: Res<AsyncComputeTaskPool>,
+    world_options: Res<WorldOptions>,
 ) {
-    for (entity, mut gen) in gen.iter_mut() {
-        if gen.gen_list_index == 0 && !gen.deleting {
-            let max = load_settings.unload_distance * load_settings.unload_distance;
-            let chunks: Vec<(IVec3, Entity)> =
-                chunks.loaded.iter().map(|(k, (e, b))| (*k, *e)).collect();
-            let pos = gen.chunk_pos.as_f32() * CHUNK_SIZE as f32;
-            let task = thread_pool.spawn(async move {
-                let mut delete = vec![];
-                for (p, e) in chunks {
-                    let d = (p * CHUNK_SIZE as i32).as_f32().distance_squared(pos);
-                    if d > max {
-                        delete.push((p, e));
-                    }
-                }
-                DeleteChunks { chunks: delete }
-            });
-            gen.deleting = true;
-            commands.spawn().insert(task).insert(TaskInfo::new(entity));
-        }
-
-        let mut count = 0;
-        while count < load_settings.generated_per_frame
-            && gen.gen_list_index < load_settings.load_chunks.len()
+    let seed = world_options.seed;
+    for (entity, gen, mut data) in generators.iter_mut() {
+        while data.gen_index < gen.load_order.len()
+            && data.current_gen_task_count < options.concurrent_generate_tasks
         {
-            let c = gen.chunk_pos + load_settings.load_chunks[gen.gen_list_index];
-            if !chunks.loaded.contains_key(&c) {
-                count += 1;
-
-                let gen_task = thread_pool.spawn(async move { generate_chunk(c, 6969) });
-                gen.gen_job_count += 1;
+            let chunk_pos = data.position + gen.load_order[data.gen_index];
+            if !chunks.chunks.contains_key(&chunk_pos) {
+                let generate_task =
+                    thread_pool.spawn(async move { generate_chunk::<0>(chunk_pos, seed) });
                 let e = commands
                     .spawn()
-                    .insert(ChunkPosition(c))
-                    .insert(gen_task)
-                    .insert(TaskInfo::new(entity))
+                    .insert(ChunkPosition(chunk_pos))
+                    .insert(ChunkState::Generating)
+                    .insert(ChunkDataTask {
+                        sender: entity,
+                        task: generate_task,
+                    })
                     .id();
-                chunks.loaded.insert(c, (e, false));
+                data.current_gen_task_count += 1;
+                chunks.chunks.insert(chunk_pos, e);
             }
-
-            gen.gen_list_index += 1;
+            data.gen_index += 1;
         }
     }
 }
 
-pub struct TaskInfo {
-    pub sender: Entity,
-}
-
-impl TaskInfo {
-    pub fn new(sender: Entity) -> Self {
-        Self { sender }
-    }
-}
-
-struct DeleteChunks {
-    chunks: Vec<(IVec3, Entity)>,
-}
-
-struct Seed(u64);
-
-fn chunk_setup(mut commands: Commands) {
-    commands.insert_resource(Seed(1337));
-    commands.insert_resource(Chunks {
-        loaded: HashMap::default(),
-    })
-}
-
-fn chunk_deleter(
+fn promote_chunks<const DEPTH: u32>(
     mut commands: Commands,
-    mut chunks: ResMut<Chunks>,
-    mut query: Query<(Entity, &mut Task<DeleteChunks>, &TaskInfo)>,
-    mut generators: Query<&mut ChunkGenerator>,
+    mut high_chunks: ResMut<Chunks<DEPTH>>,
+    low_chunks: ResMut<Chunks<{ DEPTH - 1 }>>,
+    mut generators: Query<(Entity, &Generator, &mut GeneratorData<DEPTH>)>,
+    options: Res<GeneratorOptions>,
+    thread_pool: Res<AsyncComputeTaskPool>,
+    world_options: Res<WorldOptions>,
 ) {
-    for (entity, mut task, info) in query.iter_mut() {
-        if let Some(delete) = block_on(poll_once(&mut *task)) {
-            for (pos, e) in delete.chunks {
-                chunks.loaded.remove(&pos);
-                commands.entity(e).despawn();
-            }
-            commands.entity(entity).despawn();
-            if let Ok(mut gen) = generators.get_mut(info.sender) {
-                gen.deleting = false;
-            }
-        }
-    }
-}
+    let seed = world_options.seed;
+    for (entity, gen, mut data) in generators.iter_mut() {
+        while data.gen_index < gen.load_order_half.len()
+            && data.current_gen_task_count < options.concurrent_generate_tasks
+        {
+            let parent_chunk_pos = data.position / 2 + gen.load_order_half[data.gen_index];
+            if let Some(&parent) = low_chunks.chunks.get(&parent_chunk_pos) {
+                if !high_chunks.chunks.contains_key(&(parent_chunk_pos * 2)) {
+                    let mut children: [MaybeUninit<Entity>; 8] =
+                        unsafe { MaybeUninit::uninit().assume_init() };
+                    for i in 0..8 {
+                        let p = parent_chunk_pos * 2 + get_child_position(i);
+                        let generate_task =
+                            thread_pool.spawn(async move { generate_chunk::<DEPTH>(p, seed) });
 
-#[derive(Default)]
-pub struct LoadSettings {
-    pub load_distance: f32,
-    pub unload_distance: f32,
-    pub generated_per_frame: usize,
-    pub meshed_per_frame: usize,
+                        let e = commands
+                            .spawn()
+                            .insert(ChunkPosition(p))
+                            .insert(ChunkState::Generating)
+                            .insert(ChunkDataTask {
+                                sender: entity,
+                                task: generate_task,
+                            })
+                            .id();
+                        children[i] = MaybeUninit::new(e);
 
-    load_chunks: Vec<IVec3>,
-}
+                        high_chunks.chunks.insert(p, e);
+                    }
 
-fn init_load_settings(mut commands: Commands) {
-    let mut load_settings = LoadSettings {
-        load_distance: 700.,
-        unload_distance: 850.,
-        generated_per_frame: 60,
-        meshed_per_frame: 25,
-        ..Default::default()
-    };
-    let extent = (load_settings.load_distance / CHUNK_SIZE as f32) as i32;
-    let max = load_settings.load_distance * load_settings.load_distance;
-    for y in -extent..extent {
-        for z in -extent..extent {
-            for x in -extent..extent {
-                let pos = IVec3::new(x, y, z);
-                let p = pos.as_f32() * CHUNK_SIZE as f32;
-                let l = p.length_squared();
-                if l <= max {
-                    load_settings.load_chunks.push(pos);
+                    data.current_gen_task_count += 8;
+
+                    commands.entity(parent).insert(ChildChunks(unsafe {
+                        mem::transmute::<_, [Entity; 8]>(children)
+                    }));
                 }
             }
+            data.gen_index += 1;
         }
     }
-    load_settings
-        .load_chunks
-        .sort_by_cached_key(|a| OrderedFloat(a.as_f32().length_squared()));
-    commands.insert_resource(load_settings);
+}
+
+fn demote_chunks<const DEPTH: u32>(
+    high_chunks: Res<Chunks<DEPTH>>,
+    mut low_chunks: ResMut<Chunks<{ DEPTH - 1 }>>,
+) {
+}
+
+fn chunk_generation_task_handler<const DEPTH: u32>(
+    mut commands: Commands,
+    mut tasks: Query<(
+        Entity,
+        &mut ChunkState,
+        &ChunkPosition,
+        &mut ChunkDataTask<DEPTH>,
+    )>,
+    mut generator_data: Query<&mut GeneratorData<DEPTH>>,
+) {
+    for (entity, mut state, position, mut task) in tasks.iter_mut() {
+        if let Some(data) = block_on(poll_once(&mut task.task)) {
+            match data.flags {
+                DataFlags::Empty => {
+                    commands.entity(entity).insert(ChunkMesh); // CHUNKMESH
+                    *state = ChunkState::Ready;
+                }
+                DataFlags::Full => {
+                    commands.entity(entity).insert(data).insert(ChunkMesh); // CHUNKMESH
+                    *state = ChunkState::Ready;
+                }
+                DataFlags::None => {
+                    commands.entity(entity).insert(data);
+                    *state = ChunkState::Generated;
+                }
+            }
+
+            commands.entity(entity).remove::<ChunkDataTask<DEPTH>>();
+
+            if let Ok(mut sender) = generator_data.get_mut(task.sender) {
+                sender.current_gen_task_count -= 1;
+            }
+        }
+    }
+}
+
+fn hide_parent(
+    mut commands: Commands,
+    parents: Query<(Entity, &ChildChunks), With<Handle<Mesh>>>,
+    child_query: Query<&ChunkMesh>,
+) {
+    parents
+        .iter()
+        .filter(|(_, children)| children.0.iter().all(|&e| child_query.get(e).is_ok()))
+        .for_each(|(entity, _)| {
+            commands.entity(entity).remove_bundle::<PbrBundle>();
+        });
 }
 
 pub fn add_systems(app: &mut AppBuilder) {
-    app.add_startup_system(chunk_setup.system())
-        .add_startup_system(init_load_settings.system())
-        .add_system_to_stage(CoreStage::PreUpdate, chunk_deleter.system())
-        .add_system(chunk_generator_handler.system())
-        .add_system(calculate_chunk_pos.system())
-        .add_system(chunk_loader.system());
+    app.add_system(load_chunks.system())
+        .add_system(hide_parent.system())
+        .insert_resource(GeneratorOptions {
+            concurrent_generate_tasks: 10,
+            concurrent_meshing_tasks: 5,
+        });
+    seq_macro::seq!(N in 1..=13 {
+        app
+        #(
+            .add_system(promote_chunks::<N>.system())
+            .add_system(demote_chunks::<N>.system())
+        )*;
+    });
+    seq_macro::seq!(N in 0..=13 {
+        app
+        #(
+            .insert_resource(Chunks::<N>::default())
+            .add_system(chunk_generation_task_handler::<N>.system())
+        )*;
+    });
 }

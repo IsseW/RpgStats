@@ -1,8 +1,9 @@
 use super::person::Person;
 
-struct WorldOptions {
-    size: usize,
-    num_settlements: usize,
+pub struct WorldOptions {
+    pub size: usize,
+    pub num_settlements: usize,
+    pub seed: i32,
 }
 
 impl Default for WorldOptions {
@@ -10,6 +11,7 @@ impl Default for WorldOptions {
         Self {
             size: 250,
             num_settlements: 20,
+            seed: 6969,
         }
     }
 }
@@ -36,8 +38,6 @@ impl World {
             population: Vec::with_capacity(options.num_settlements * 15),
             regions: vec![Default::default(); options.size * options.size],
         };
-
-        
 
         world
     }

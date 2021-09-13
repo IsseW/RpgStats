@@ -8,6 +8,11 @@ pub fn frustum_culling(
     camera_query: Query<(&Camera, &GlobalTransform), Changed<GlobalTransform>>,
     mut bound_vol_query: Query<(&ChunkPosition, &mut Visible)>,
 ) {
+    #[cfg(feature = "debug")]
+    puffin::profile_function!();
+    #[cfg(feature = "debug")]
+    puffin::profile_scope!("chunk_culling");
+
     // TODO: only compute frustum on camera change. Can store in a frustum component.
     for (camera, camera_position) in camera_query.iter() {
         let ndc_to_world: Mat4 =

@@ -1,4 +1,3 @@
-use bevy_networking_turbulence::{MessageChannelSettings, MessageChannelMode};
 use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct JoinData {
@@ -56,8 +55,8 @@ macro_rules! net_commands {
                         ) *
                     }
                 ) *
-                
-                
+
+
                 $(
                     #[derive(Serialize, Deserialize, Clone, Debug)]
                     pub enum [< $channel:camel >] {
@@ -101,12 +100,12 @@ macro_rules! net_commands {
                     mut net: bevy::prelude::ResMut<bevy_networking_turbulence::NetworkResource>,
                     $(mut [< $name _writer >]: bevy::prelude::EventWriter<net_events::NetEvent<net_events::[< channel $channel:snake >]::[<$name:camel>]>>), *
                 ) {
-                    for (handle, connection) in net.connections.iter_mut() {
+                    for (_handle, connection) in net.connections.iter_mut() {
                         let channels = connection.channels().unwrap();
                         while let Some(client_message) = channels.recv::<net_events::[< $channel:camel >]>() {
                             match client_message {
                                 $(net_events::[< $channel:camel >]::[< $name:camel >](data) => {
-                                    [< $name _writer >].send(net_events::NetEvent::new(data, handle));
+                                    [< $name _writer >].send(net_events::NetEvent::new(data, _handle));
                                 }), *
                             }
                         }

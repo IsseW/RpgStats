@@ -1,4 +1,4 @@
-use crate::stats::{Stat, BaseStat, Stats};
+use crate::stats::{Stat, Stats};
 use crate::count_idents;
 
 macro_rules! resources {
