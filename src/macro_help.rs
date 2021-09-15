@@ -189,5 +189,14 @@ macro_rules! cmap {
                 )*
             ]
         })
-    }
+    };
+    ($($from:ident), + [$start:literal..=$end:literal] $expr:expr) => {
+        seq_macro::seq!( N in $start..=$end {
+            [
+                #(
+                    ($expr)($($from[N]), +),
+                )*
+            ]
+        })
+    };
 }

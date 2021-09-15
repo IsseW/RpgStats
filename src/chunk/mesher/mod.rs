@@ -33,7 +33,7 @@ impl Vertex {
     }
 }
 
-pub struct ChunkMesh;
+pub struct ChunkMesh(pub bool);
 
 struct MeshData {
     vertices: Vec<[u32; 2]>,
@@ -42,15 +42,21 @@ struct MeshData {
 
 fn chunk_meshing_system<const DEPTH: u32>(
     mut commands: Commands,
-    mut generators: Query<(Entity, &Generator, &mut GeneratorData<DEPTH>)>,
+    mut generators: Query<(
+        Entity,
+        &Generator,
+        &mut GeneratorData<DEPTH>,
+        Option<&mut GeneratorData<{ DEPTH + 1 }>>,
+    )>,
     chunks: Res<Chunks<DEPTH>>,
     options: Res<GeneratorOptions>,
     mut chunk_query: Query<(Entity, &mut ChunkState, &ChunkData<DEPTH>), Without<ChunkMesh>>,
+
     thread_pool: Res<AsyncComputeTaskPool>,
     test_mat: Res<Handle<StandardMaterial>>,
     test_mesh: Res<Handle<Mesh>>,
 ) {
-    for (entity, gen, mut data) in generators.iter_mut() {
+    for (entity, gen, mut data, mut child_data) in generators.iter_mut() {
         while data.mesh_index < gen.load_order.len()
             && data.current_mesh_task_count < options.concurrent_meshing_tasks
         {
@@ -60,24 +66,31 @@ fn chunk_meshing_system<const DEPTH: u32>(
                     if *state == ChunkState::Generated {
                         match chunk_data.flags {
                             _ => {
-                                commands.entity(e).insert(ChunkMesh).insert_bundle(
-                                    PbrBundle {
+                                commands
+                                    .entity(e)
+                                    .insert(ChunkMesh(DEPTH == 0))
+                                    .insert_bundle(PbrBundle {
                                         material: test_mat.clone(),
                                         mesh: test_mesh.clone(),
                                         transform: {
+                                            let size = (chunk_size(DEPTH)) as f32;
                                             let mut transform = Transform::from_translation(
-                                                chunk_pos.as_f32() * (chunk_size(DEPTH)) as f32,
+                                                chunk_pos.as_f32() * size + Vec3::splat(size / 2.0),
                                             );
-                                            transform.scale = Vec3::ONE * chunk_size(DEPTH) as f32;
-//
+                                            transform.scale = Vec3::splat(size);
+                                            //
                                             transform
                                         },
                                         ..Default::default()
-                                    },
-                                );
+                                    });
+                                *state = ChunkState::Ready;
+                                if let Some(child_data) = child_data.as_mut() {
+                                    child_data.gen_index = 0;
+                                }
                             }
                             DataFlags::Empty | DataFlags::Full => {
-                                commands.entity(entity).insert(ChunkMesh);
+                                commands.entity(entity).insert(ChunkMesh(false));
+                                *state = ChunkState::Ready;
                             }
                             DataFlags::None => {
                                 let data_copy = chunk_data.voxels.clone();
@@ -171,17 +184,17 @@ fn poll_mesh_tasks<const DEPTH: u32>(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     pipeline: Res<Pipeline>,
-    mut chunks: Query<
-        (
-            Entity,
-            &ChunkPosition,
-            &mut ChunkState,
-            &mut GeneratorTask<MeshData>,
-            Option<&mut MeshBundle>,
-        ),
-        With<ChunkData<DEPTH>>,
-    >,
-    mut gen: Query<&mut GeneratorData<DEPTH>>,
+    mut chunks: Query<(
+        Entity,
+        &ChunkPosition<DEPTH>,
+        &mut ChunkState,
+        &mut GeneratorTask<MeshData>,
+        Option<&mut MeshBundle>,
+    )>,
+    mut gen: Query<(
+        &mut GeneratorData<DEPTH>,
+        Option<&mut GeneratorData<{ DEPTH + 1 }>>,
+    )>,
 ) {
     for (entity, pos, mut state, mut task, bundle) in chunks.iter_mut() {
         if let Some(mesh_data) = block_on(poll_once(&mut task.task)) {
@@ -201,7 +214,7 @@ fn poll_mesh_tasks<const DEPTH: u32>(
                 } else {
                     commands
                         .entity(entity)
-                        .insert(ChunkMesh)
+                        .insert(ChunkMesh(DEPTH == 0))
                         .insert_bundle(MeshBundle {
                             mesh: mesh_handle,
                             transform: {
@@ -221,8 +234,11 @@ fn poll_mesh_tasks<const DEPTH: u32>(
             }
 
             commands.entity(entity).remove::<GeneratorTask<MeshData>>();
-            if let Ok(mut gen) = gen.get_mut(task.sender) {
+            if let Ok((mut gen, mut child_data)) = gen.get_mut(task.sender) {
                 gen.current_mesh_task_count -= 1;
+                if let Some(child_data) = child_data.as_mut() {
+                    child_data.gen_index = 0;
+                }
             }
         }
     }

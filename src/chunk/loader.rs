@@ -4,8 +4,8 @@ use crate::{chunk::chunk::get_child_position, cmap, world::WorldOptions};
 
 use super::{
     chunk::{
-        ChildChunks, ChunkData, ChunkDataTask, ChunkPosition, ChunkState, Chunks, DataFlags,
-        CHUNK_SIZE,
+        chunk_size, ChildChunks, ChunkData, ChunkDataTask, ChunkPosition, ChunkState, Chunks,
+        DataFlags, CHUNK_SIZE,
     },
     generator::{Generator, GeneratorData},
     mesher::ChunkMesh,
@@ -56,7 +56,7 @@ fn generate_voxel(
 }
 
 fn generate_chunk<const DEPTH: u32>(p: IVec3, seed: i32) -> ChunkData<DEPTH> {
-    let p = (p.as_f32() * CHUNK_SIZE as f32 - Vec3::ONE) * 2f32.powi(DEPTH as i32);
+    let p = p.as_f32() * CHUNK_SIZE as f32 - Vec3::ONE;
 
     let noise = NoiseBuilder::fbm_2d_offset(p.x, CHUNK_SIZE, p.z, CHUNK_SIZE)
         .with_seed(seed)
@@ -71,7 +71,8 @@ fn generate_chunk<const DEPTH: u32>(p: IVec3, seed: i32) -> ChunkData<DEPTH> {
     for y in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
             for x in 0..CHUNK_SIZE {
-                let p = p + Vec3::new(x as f32, y as f32, z as f32) * 2f32.powi(DEPTH as i32);
+                let p = (p + Vec3::new(x as f32, y as f32, z as f32)) * chunk_size(DEPTH) as f32
+                    / CHUNK_SIZE as f32;
                 let strength = noise[z * CHUNK_SIZE + x] * 300. - p.y;
 
                 generate_voxel(x, y, z, strength, p, &mut voxels, &mut empty, &mut full);
@@ -109,7 +110,7 @@ fn load_chunks(
                     thread_pool.spawn(async move { generate_chunk::<0>(chunk_pos, seed) });
                 let e = commands
                     .spawn()
-                    .insert(ChunkPosition(chunk_pos))
+                    .insert(ChunkPosition::<0>(chunk_pos))
                     .insert(ChunkState::Generating)
                     .insert(ChunkDataTask {
                         sender: entity,
@@ -126,12 +127,13 @@ fn load_chunks(
 
 fn promote_chunks<const DEPTH: u32>(
     mut commands: Commands,
-    mut high_chunks: ResMut<Chunks<DEPTH>>,
-    low_chunks: ResMut<Chunks<{ DEPTH - 1 }>>,
+    mut child_chunks: ResMut<Chunks<DEPTH>>,
+    parent_chunks: ResMut<Chunks<{ DEPTH - 1 }>>,
+    parent_query: Query<(&ChunkData<{ DEPTH - 1 }>, &ChunkState)>,
     mut generators: Query<(Entity, &Generator, &mut GeneratorData<DEPTH>)>,
     options: Res<GeneratorOptions>,
-    thread_pool: Res<AsyncComputeTaskPool>,
     world_options: Res<WorldOptions>,
+    thread_pool: Res<AsyncComputeTaskPool>,
 ) {
     let seed = world_options.seed;
     for (entity, gen, mut data) in generators.iter_mut() {
@@ -139,34 +141,38 @@ fn promote_chunks<const DEPTH: u32>(
             && data.current_gen_task_count < options.concurrent_generate_tasks
         {
             let parent_chunk_pos = data.position / 2 + gen.load_order_half[data.gen_index];
-            if let Some(&parent) = low_chunks.chunks.get(&parent_chunk_pos) {
-                if !high_chunks.chunks.contains_key(&(parent_chunk_pos * 2)) {
-                    let mut children: [MaybeUninit<Entity>; 8] =
-                        unsafe { MaybeUninit::uninit().assume_init() };
-                    for i in 0..8 {
-                        let p = parent_chunk_pos * 2 + get_child_position(i);
-                        let generate_task =
-                            thread_pool.spawn(async move { generate_chunk::<DEPTH>(p, seed) });
+            if let Some(&parent) = parent_chunks.chunks.get(&parent_chunk_pos) {
+                if let Ok((d, &state)) = parent_query.get(parent) {
+                    if state == ChunkState::Ready {
+                        if !child_chunks.chunks.contains_key(&(parent_chunk_pos * 2)) {
+                            let mut children: [MaybeUninit<Entity>; 8] =
+                                unsafe { MaybeUninit::uninit().assume_init() };
+                            for i in 0..8 {
+                                let p = parent_chunk_pos * 2 + get_child_position(i);
+                                let generate_task = thread_pool
+                                    .spawn(async move { generate_chunk::<DEPTH>(p, seed) });
 
-                        let e = commands
-                            .spawn()
-                            .insert(ChunkPosition(p))
-                            .insert(ChunkState::Generating)
-                            .insert(ChunkDataTask {
-                                sender: entity,
-                                task: generate_task,
-                            })
-                            .id();
-                        children[i] = MaybeUninit::new(e);
+                                let e = commands
+                                    .spawn()
+                                    .insert(ChunkPosition::<DEPTH>(p))
+                                    .insert(ChunkState::Generating)
+                                    .insert(ChunkDataTask {
+                                        sender: entity,
+                                        task: generate_task,
+                                    })
+                                    .id();
+                                children[i] = MaybeUninit::new(e);
 
-                        high_chunks.chunks.insert(p, e);
+                                child_chunks.chunks.insert(p, e);
+                            }
+
+                            data.current_gen_task_count += 8;
+
+                            commands.entity(parent).insert(ChildChunks(unsafe {
+                                mem::transmute::<_, [Entity; 8]>(children)
+                            }));
+                        }
                     }
-
-                    data.current_gen_task_count += 8;
-
-                    commands.entity(parent).insert(ChildChunks(unsafe {
-                        mem::transmute::<_, [Entity; 8]>(children)
-                    }));
                 }
             }
             data.gen_index += 1;
@@ -174,18 +180,12 @@ fn promote_chunks<const DEPTH: u32>(
     }
 }
 
-fn demote_chunks<const DEPTH: u32>(
-    high_chunks: Res<Chunks<DEPTH>>,
-    mut low_chunks: ResMut<Chunks<{ DEPTH - 1 }>>,
-) {
-}
-
 fn chunk_generation_task_handler<const DEPTH: u32>(
     mut commands: Commands,
     mut tasks: Query<(
         Entity,
         &mut ChunkState,
-        &ChunkPosition,
+        &ChunkPosition<DEPTH>,
         &mut ChunkDataTask<DEPTH>,
     )>,
     mut generator_data: Query<&mut GeneratorData<DEPTH>>,
@@ -194,11 +194,14 @@ fn chunk_generation_task_handler<const DEPTH: u32>(
         if let Some(data) = block_on(poll_once(&mut task.task)) {
             match data.flags {
                 DataFlags::Empty => {
-                    commands.entity(entity).insert(ChunkMesh); // CHUNKMESH
+                    commands.entity(entity).insert(ChunkMesh(DEPTH == 0));
                     *state = ChunkState::Ready;
                 }
                 DataFlags::Full => {
-                    commands.entity(entity).insert(data).insert(ChunkMesh); // CHUNKMESH
+                    commands
+                        .entity(entity)
+                        .insert(data)
+                        .insert(ChunkMesh(DEPTH == 0));
                     *state = ChunkState::Ready;
                 }
                 DataFlags::None => {
@@ -211,27 +214,68 @@ fn chunk_generation_task_handler<const DEPTH: u32>(
 
             if let Ok(mut sender) = generator_data.get_mut(task.sender) {
                 sender.current_gen_task_count -= 1;
+
+                sender.mesh_index = 0;
             }
         }
     }
 }
 
-fn hide_parent(
+fn hide_parent<const DEPTH: u32>(
     mut commands: Commands,
-    parents: Query<(Entity, &ChildChunks), With<Handle<Mesh>>>,
-    child_query: Query<&ChunkMesh>,
+    mut parents: Query<(
+        Entity,
+        &ChunkPosition<{ DEPTH - 1 }>,
+        &ChildChunks,
+        &mut ChunkMesh,
+    )>,
+    mut child_query: Query<
+        (&mut ChunkMesh, &ChunkState),
+        (
+            With<ChunkPosition<DEPTH>>,
+            Without<ChunkPosition<{ DEPTH - 1 }>>,
+        ),
+    >,
+    mut child_chunks: ResMut<Chunks<DEPTH>>,
+    gen: Query<(&Generator, &GeneratorData<DEPTH>)>,
 ) {
-    parents
-        .iter()
-        .filter(|(_, children)| children.0.iter().all(|&e| child_query.get(e).is_ok()))
-        .for_each(|(entity, _)| {
-            commands.entity(entity).remove_bundle::<PbrBundle>();
-        });
+    'parent_loop: for (entity, pos, children, mut mesh) in parents.iter_mut() {
+        if mesh.0 {
+            for e in children.0 {
+                if let Ok((_, &state)) = child_query.get_mut(e) {
+                    if state != ChunkState::Ready {
+                        continue 'parent_loop;
+                    }
+                } else {
+                    continue 'parent_loop;
+                }
+            }
+            mesh.0 = false;
+            for e in children.0 {
+                if let Ok((mut mesh, _)) = child_query.get_mut(e) {
+                    mesh.0 = true;
+                }
+            }
+        } else if gen.iter().all(|(gen, data)| {
+            // TODO : make check async
+            let dif = data.position - pos.0 * 2;
+            dif.x * dif.x + dif.y * dif.y + dif.z * dif.z
+                > (gen.unload_distance + 1).pow(2)
+        }) {
+            mesh.0 = true;
+            commands.entity(entity).remove::<ChildChunks>();
+            for i in 0..8 {
+                commands.entity(children.0[i]).despawn();
+                child_chunks
+                    .chunks
+                    .remove(&(pos.0 * 2 + get_child_position(i)));
+            }
+        }
+    }
 }
 
 pub fn add_systems(app: &mut AppBuilder) {
     app.add_system(load_chunks.system())
-        .add_system(hide_parent.system())
         .insert_resource(GeneratorOptions {
             concurrent_generate_tasks: 10,
             concurrent_meshing_tasks: 5,
@@ -240,7 +284,7 @@ pub fn add_systems(app: &mut AppBuilder) {
         app
         #(
             .add_system(promote_chunks::<N>.system())
-            .add_system(demote_chunks::<N>.system())
+            .add_system_to_stage(CoreStage::PostUpdate, hide_parent::<N>.system())
         )*;
     });
     seq_macro::seq!(N in 0..=13 {

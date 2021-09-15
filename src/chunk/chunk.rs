@@ -34,8 +34,42 @@ pub fn get_child_position(index: usize) -> IVec3 {
     IVec3::new((index % 2) as i32, (index % 4) as i32 / 2, index as i32 / 4)
 }
 
-pub struct ChunkPos<const DEPTH: u32>(IVec3);
+pub struct ChunkPosition<const DEPTH: u32>(pub IVec3);
 
+impl<const DEPTH: u32> ChunkPosition<DEPTH> {
+    const SIZE: f32 = chunk_size(DEPTH) as f32;
+
+    pub fn outside_plane(&self, point: Vec3, normal: Vec3) -> bool {
+        let t = normal.dot(point);
+        for p in self.get_corners() {
+            if normal.dot(p) - t < 0. {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    pub fn get_corners(&self) -> [Vec3; 8] {
+        let p = self.0.as_f32() * Self::SIZE;
+        let raw_corners = Self::get_raw_corners();
+        crate::cmap!(raw_corners[0..8] | a: IVec3 | p + a.as_f32() * Self::SIZE)
+    }
+
+    pub fn get_raw_corners() -> [IVec3; 8] {
+        [
+            IVec3::new(0, 0, 0),
+            IVec3::new(0, 0, 1),
+            IVec3::new(0, 1, 0),
+            IVec3::new(0, 1, 1),
+            IVec3::new(1, 0, 0),
+            IVec3::new(1, 0, 1),
+            IVec3::new(1, 1, 0),
+            IVec3::new(1, 1, 1),
+        ]
+    }
+}
+
+#[derive(PartialEq, Eq)]
 pub enum DataFlags {
     Empty,
     Full,
@@ -61,9 +95,6 @@ pub enum ChunkState {
 pub struct Chunks<const DEPTH: u32> {
     pub chunks: HashMap<IVec3, Entity>,
 }
-
-#[derive(Debug)]
-pub struct ChunkPosition(pub IVec3);
 
 #[derive(Debug)]
 pub struct ChildChunks(pub [Entity; 8]);

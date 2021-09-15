@@ -54,11 +54,11 @@ fn setup_player(mut commands: Commands) {
             ..Default::default()
         })
         .insert(FlyCam)
-        .insert(Light {
-            range: 10000.0,
-            intensity: 100.0,
-            ..Default::default()
-        })
+        //.insert(Light {
+        //    range: 10000.0,
+        //    intensity: 10000.0,
+        //    ..Default::default()
+        //})
         .insert_bundle(crate::chunk::GeneratorBundle::new(5, 7));
 }
 
@@ -99,6 +99,14 @@ fn player_move(
         if !velocity.is_nan() {
             transform.translation += velocity * time.delta_seconds() * settings.speed * speed;
         }
+    }
+}
+
+fn player_settings(mut settings: ResMut<MovementSettings>, keys: Res<Input<KeyCode>>) {
+    if keys.just_pressed(KeyCode::Up) {
+        settings.speed *= 2.0;
+    } else if keys.just_pressed(KeyCode::Down) {
+        settings.speed /= 2.0;
     }
 }
 
@@ -147,6 +155,7 @@ impl Plugin for PlayerPlugin {
             .add_startup_system(initial_grab_cursor.system())
             .add_system(player_move.system())
             .add_system(player_look.system())
+            .add_system(player_settings.system())
             .add_system(cursor_grab.system());
     }
 }
