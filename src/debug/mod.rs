@@ -12,9 +12,11 @@ struct DebugInfo {
     num_components: HashMap<Uuid, usize>,
 }
 
+use crate::flycam::FlyCam;
+
 pub struct DebugPlugin;
 
-fn debug_info(egui_context: Res<EguiContext>, diagnostics: Res<Diagnostics>) {
+fn debug_info(egui_context: Res<EguiContext>, diagnostics: Res<Diagnostics>, camera_query: Query<(&GlobalTransform, &FlyCam)>) {
     puffin::profile_function!();
     puffin::profile_scope!("draw_debug");
     egui::SidePanel::left("debug_panel").show(egui_context.ctx(), |ui: &mut Ui| {
@@ -24,6 +26,11 @@ fn debug_info(egui_context: Res<EguiContext>, diagnostics: Res<Diagnostics>) {
 
                 ui.label(format!("{}", (value * 100.).round() / 100.));
             }
+        }
+
+        for (transform, _camera) in camera_query.iter() {
+            ui.heading("Camera");
+            ui.label(format!("position: {}", transform.translation));
         }
     });
 }

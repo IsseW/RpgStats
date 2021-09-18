@@ -67,7 +67,7 @@ pub fn greedy_meshing<F: FnMut(([f32; 3], [f32; 3], [f32; 3], [f32; 3]), Voxel, 
                             Some(v1) => {
                                 let width = {
                                     let mut w = 1;
-                                    while i + w < CHUNK_SIZE - 1 {
+                                    while i + w < CHUNK_SIZE {
                                         if let Some(v2) = voxel_mask[n + w] {
                                             if v1.is_same_face(&v2, face) {
                                                 w += 1;
@@ -83,7 +83,7 @@ pub fn greedy_meshing<F: FnMut(([f32; 3], [f32; 3], [f32; 3], [f32; 3]), Voxel, 
 
                                 let height = {
                                     let mut h = 1;
-                                    'calc: while j + h < CHUNK_SIZE - 1 {
+                                    'calc: while j + h < CHUNK_SIZE {
                                         for k in 0..width {
                                             if let Some(Some(v2)) =
                                                 voxel_mask.get(n + k + h * CHUNK_SIZE)

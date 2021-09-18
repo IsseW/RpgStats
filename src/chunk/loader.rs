@@ -2,16 +2,7 @@ use std::mem::{self, MaybeUninit};
 
 use crate::{chunk::chunk::get_child_position, cmap, world::WorldOptions};
 
-use super::{
-    chunk::{
-        chunk_size, ChildChunks, ChunkData, ChunkDataTask, ChunkPosition, ChunkState, Chunks,
-        DataFlags, CHUNK_SIZE,
-    },
-    generator::{Generator, GeneratorData},
-    mesher::ChunkMesh,
-    voxel::*,
-    GeneratorOptions,
-};
+use super::{GeneratorOptions, chunk::{CHUNK_SIZE, ChildChunks, ChunkData, ChunkDataTask, ChunkPosition, ChunkState, Chunks, DataFlags, MAX_DEPTH, chunk_size}, generator::{Generator, GeneratorData}, mesher::ChunkMesh, voxel::*};
 use bevy::{
     prelude::*,
     tasks::{AsyncComputeTaskPool, Task},
@@ -56,11 +47,11 @@ fn generate_voxel(
 }
 
 fn generate_chunk<const DEPTH: u32>(p: IVec3, seed: i32) -> ChunkData<DEPTH> {
-    let p = p.as_f32() * CHUNK_SIZE as f32 - Vec3::ONE;
+    let p = p.as_f32() * CHUNK_SIZE as f32;
 
     let noise = NoiseBuilder::fbm_2d_offset(p.x, CHUNK_SIZE, p.z, CHUNK_SIZE)
         .with_seed(seed)
-        .with_freq(0.005 / (2 << DEPTH) as f32)
+        .with_freq(0.005 / (2 << (MAX_DEPTH - DEPTH)) as f32)
         .with_octaves(8)
         .generate()
         .0;
@@ -129,7 +120,7 @@ fn promote_chunks<const DEPTH: u32>(
     mut commands: Commands,
     mut child_chunks: ResMut<Chunks<DEPTH>>,
     parent_chunks: ResMut<Chunks<{ DEPTH - 1 }>>,
-    parent_query: Query<(&ChunkData<{ DEPTH - 1 }>, &ChunkState)>,
+    parent_query: Query<(&ChunkData<{ DEPTH - 1 }>, &ChunkState), Without<ChildChunks>>,
     mut generators: Query<(Entity, &Generator, &mut GeneratorData<DEPTH>)>,
     options: Res<GeneratorOptions>,
     world_options: Res<WorldOptions>,
@@ -256,21 +247,22 @@ fn hide_parent<const DEPTH: u32>(
                     mesh.0 = true;
                 }
             }
-        } else if gen.iter().all(|(gen, data)| {
-            // TODO : make check async
-            let dif = data.position - pos.0 * 2;
-            dif.x * dif.x + dif.y * dif.y + dif.z * dif.z
-                > (gen.unload_distance + 1).pow(2)
-        }) {
-            mesh.0 = true;
-            commands.entity(entity).remove::<ChildChunks>();
-            for i in 0..8 {
-                commands.entity(children.0[i]).despawn();
-                child_chunks
-                    .chunks
-                    .remove(&(pos.0 * 2 + get_child_position(i)));
-            }
-        }
+        } 
+        //else if gen.iter().all(|(gen, data)| {
+        //    // TODO : make check async
+        //    let dif = data.position - pos.0 * 2;
+        //    dif.x * dif.x + dif.y * dif.y + dif.z * dif.z
+        //        > (gen.unload_distance + 1).pow(2)
+        //}) {
+        //    mesh.0 = true;
+        //    commands.entity(entity).remove::<ChildChunks>();
+        //    for i in 0..8 {
+        //        commands.entity(children.0[i]).despawn();
+        //        child_chunks
+        //            .chunks
+        //            .remove(&(pos.0 * 2 + get_child_position(i)));
+        //    }
+        //}
     }
 }
 
