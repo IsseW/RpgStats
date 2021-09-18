@@ -43,7 +43,7 @@ fn initial_grab_cursor(mut windows: ResMut<Windows>) {
 }
 
 /// Spawns the `Camera3dBundle` to be controlled
-fn setup_player(mut commands: Commands) {
+fn setup_player_system(mut commands: Commands) {
     commands
         .spawn_bundle(PerspectiveCameraBundle {
             transform: Transform::from_xyz(-2.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -53,17 +53,11 @@ fn setup_player(mut commands: Commands) {
             },
             ..Default::default()
         })
-        .insert(FlyCam)
-        //.insert(Light {
-        //    range: 10000.0,
-        //    intensity: 10000.0,
-        //    ..Default::default()
-        //})
-        .insert_bundle(crate::chunk::GeneratorBundle::new(5, 7));
+        .insert(FlyCam);
 }
 
 /// Handles keyboard input and movement
-fn player_move(
+fn player_move_system(
     keys: Res<Input<KeyCode>>,
     time: Res<Time>,
     windows: Res<Windows>,
@@ -102,7 +96,7 @@ fn player_move(
     }
 }
 
-fn player_settings(mut settings: ResMut<MovementSettings>, keys: Res<Input<KeyCode>>) {
+fn player_speed_system(mut settings: ResMut<MovementSettings>, keys: Res<Input<KeyCode>>) {
     if keys.just_pressed(KeyCode::Up) {
         settings.speed *= 2.0;
     } else if keys.just_pressed(KeyCode::Down) {
@@ -111,7 +105,7 @@ fn player_settings(mut settings: ResMut<MovementSettings>, keys: Res<Input<KeyCo
 }
 
 /// Handles looking around if cursor is locked
-fn player_look(
+fn player_look_system(
     settings: Res<MovementSettings>,
     windows: Res<Windows>,
     mut state: ResMut<InputState>,
@@ -138,7 +132,7 @@ fn player_look(
     }
 }
 
-fn cursor_grab(keys: Res<Input<KeyCode>>, mut windows: ResMut<Windows>) {
+fn cursor_grab_system(keys: Res<Input<KeyCode>>, mut windows: ResMut<Windows>) {
     let window = windows.get_primary_mut().unwrap();
     if keys.just_pressed(KeyCode::Escape) {
         toggle_grab_cursor(window);
@@ -151,11 +145,11 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app.init_resource::<InputState>()
             .init_resource::<MovementSettings>()
-            .add_startup_system(setup_player.system())
+            .add_startup_system(setup_player_system.system())
             .add_startup_system(initial_grab_cursor.system())
-            .add_system(player_move.system())
-            .add_system(player_look.system())
-            .add_system(player_settings.system())
-            .add_system(cursor_grab.system());
+            .add_system(player_move_system.system())
+            .add_system(player_look_system.system())
+            .add_system(player_speed_system.system())
+            .add_system(cursor_grab_system.system());
     }
 }

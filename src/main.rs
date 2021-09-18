@@ -1,6 +1,5 @@
-//#![allow(dead_code)]
-#![feature(generic_const_exprs)]
 #![feature(float_interpolation)]
+#![feature(int_roundings)]
 mod animation;
 mod chunk;
 mod creature;
